@@ -1,0 +1,40 @@
+model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
+[projects."/Users/torger/code/dimitto"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/div/my-finances/ex"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/div/my-finances/ex/lib/ex"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/bring_prices_excel"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/torger/aiai"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/torger/celery_mq"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/go-ur"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/encore_test/url-shawty"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/encore_test/invoice-parser"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/encore_test/my-app"]
+trust_level = "trusted"
+
+[projects."/Users/torger/code/div/fitness-app"]
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+"gpt-5.5" = 4
+
+[mcp_servers.sveltekit-mcp]
+url = "https://mcp.svelte.dev/mcp"

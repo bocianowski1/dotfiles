@@ -1,0 +1,15 @@
+# Codex runtime/private data
+codex/.config/codex/auth.json
+codex/.config/codex/history.jsonl
+codex/.config/codex/sessions/
+codex/.config/codex/log/
+codex/.config/codex/*.log
+codex/.config/codex/*.sqlite*
+codex/.config/codex/cache/
+codex/.config/codex/tmp/
+codex/.config/codex/.tmp/
+codex/.config/codex/shell_snapshots/
+codex/.config/codex/installation_id
+codex/.config/codex/state_*.sqlite*
+codex/.config/codex/skills/.system/
+codex/.config/codex/models_cache.json
