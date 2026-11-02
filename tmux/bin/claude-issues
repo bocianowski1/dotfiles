@@ -5,7 +5,7 @@
 # Always uses the torgermalling login, whichever gh account is active.
 set -euo pipefail
 USER_LOGIN=torgermalling
-CACHE=~/.cache/claude-sidebar/issues.tsv
+CACHE=${CLAUDE_SIDEBAR_CACHE:-~/.cache/claude-sidebar}/issues.tsv
 
 GH_TOKEN=$(gh auth token --user "$USER_LOGIN")
 export GH_TOKEN
@@ -13,12 +13,23 @@ fields=repository,number,title,url,updatedAt
 jq_rows='.[] | [.updatedAt, .repository.name, (.number | tostring), $a, (.title | gsub("[\t\n]"; " ")), .url] | @tsv'
 
 tmp=$(mktemp "${CACHE%/*}/issues.XXXXXX")
-trap 'rm -f "$tmp"' EXIT
+trap 'rm -f "$tmp" "$tmp.all"' EXIT
+# assigned rows sort first within a url, so the dedupe keeps "assigned" when an issue is both
 {
   gh search issues --assignee "$USER_LOGIN" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"1\"}"
   gh search issues --author "$USER_LOGIN" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"0\"}"
-} | sort -t$'\t' -k6,6 -k4,4r | awk -F'\t' '!seen[$6]++' | sort -t$'\t' -k1,1r | cut -f2- >"$tmp"
-# assigned rows sort first within a url, so the dedupe keeps "assigned" when an issue is both
+} | sort -t$'\t' -k6,6 -k4,4r | awk -F'\t' '!seen[$6]++' | sort -t$'\t' -k1,1r | cut -f2- >"$tmp.all"
+
+# Issues closed from the issue view in the last 15 minutes stay out, even while GitHub's
+# search still lists them as open; older entries are dropped from closed.tsv
+closed=${CACHE%/*}/closed.tsv
+if [ -f "$closed" ]; then
+  awk -F'\t' -v cutoff=$(($(date +%s) - 900)) '$2 >= cutoff' "$closed" >"$closed.tmp" && mv "$closed.tmp" "$closed"
+  awk -F'\t' 'NR == FNR { gone[$1] = 1; next } !($5 in gone)' "$closed" "$tmp.all" >"$tmp"
+else
+  mv "$tmp.all" "$tmp"
+fi
+rm -f "$tmp.all"
 chmod 600 "$tmp"
 mv "$tmp" "$CACHE"
 trap - EXIT

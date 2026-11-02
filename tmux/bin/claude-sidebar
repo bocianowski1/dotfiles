@@ -145,6 +145,7 @@ issue_lines() {
     fi
     issue_lines+=("$line") issue_urls+=("$url")
   done
+  issue_lines+=("${DIM}  cache $(issue_ttl)m · click to change${RESET}") issue_urls+=(ttl)
 }
 
 # Refresh the issues cache in the background every 5 minutes, or now with "force"
@@ -170,18 +171,50 @@ issue_scroll() { # $1 rows; keeps a selection inside the visible window
     [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_sel=$((issue_offset + ISSUES_ROWS - 1))
   fi
 }
-issue_move() { # $1 issues; scrolls to keep the selection visible
+issue_move() { # $1 issues; scrolls to keep the selection visible, prefetches the selection
   [ "$issue_total" -gt 0 ] || return
   issue_sel=$((issue_sel + $1))
   [ "$issue_sel" -lt "$issue_total" ] || issue_sel=$((issue_total - 1))
   [ "$issue_sel" -ge 0 ] || issue_sel=0
   [ "$issue_sel" -ge "$issue_offset" ] || issue_offset=$issue_sel
   [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_offset=$((issue_sel - ISSUES_ROWS + 1))
+  issue_prefetch_selected
 }
-issue_open() { # $1 url; refetch when you come back to the terminal, since you may change it
-  open_url "$1"
-  tmux set -g @claude_issues_dirty 1
+issue_open() { # $1 url: the issue view popup (claude-issue), over the window this sidebar is in
+  local window ref
+  window=$(tmux display -p -t "$TMUX_PANE" '#{window_id}')
+  ref=$(sed -E 's#.*github\.com/[^/]+/([^/]+)/issues/([0-9]+).*#\1\#\2#' <<<"$1")
+  tmux display-popup -E -w 85% -h 85% -T " $ref " "'${self%/*}/claude-issue' view '$1' '$window'" &
 }
+# Fetch an issue for the popup in the background, at the text width the popup will have
+# (85% of the window, minus borders and margin), so opening it is instant
+issue_prefetch() { # $1 url
+  [ -n "$1" ] || return
+  local ww
+  ww=$(tmux display -p -t "$TMUX_PANE" '#{window_width}')
+  "${self%/*}/claude-issue" prefetch "$1" $((ww * 85 / 100 - 4)) >/dev/null 2>&1 &
+}
+issue_prefetch_selected() { issue_prefetch "$(sed -n "$((issue_sel + 1))p" "$ISSUES_CACHE" | cut -f5)"; }
+
+# How long fetched issues are cached (minutes, used by claude-issue); click or "t" cycles it
+ISSUE_TTL_FILE=~/.config/claude-sidebar/issue-ttl
+ISSUE_TTL_STEPS=(5 15 30 60)
+issue_ttl() {
+  local m
+  m=$(cat "$ISSUE_TTL_FILE" 2>/dev/null)
+  [[ $m =~ ^[0-9]+$ ]] || m=15
+  echo "$m"
+}
+issue_ttl_cycle() {
+  local now next=${ISSUE_TTL_STEPS[0]} i
+  now=$(issue_ttl)
+  for i in "${!ISSUE_TTL_STEPS[@]}"; do
+    [ "${ISSUE_TTL_STEPS[i]}" -gt "$now" ] && { next=${ISSUE_TTL_STEPS[i]}; break; }
+  done
+  mkdir -p "${ISSUE_TTL_FILE%/*}"
+  echo "$next" >"$ISSUE_TTL_FILE"
+}
+
 issue_mode_exit() {
   issue_mode=0
   tmux last-pane -t "$TMUX_PANE" 2>/dev/null || focus_window "$(tmux display -p -t "$TMUX_PANE" '#{window_id}')"
@@ -229,14 +262,20 @@ render() {
   local host continuum last_continuum=0
   host=$(hostname)
   continuum=~/.tmux/plugins/tmux-continuum/scripts/continuum_save.sh
-  # Hide the cursor and ask for SGR mouse clicks so groups and items are clickable
-  trap 'printf "%s" "$ESC[?1000l$ESC[?1006l$ESC[?25h"' EXIT
-  printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1006h$ESC[2J"
+  # Hide the cursor; ask for SGR mouse reports of clicks and of movement (for hover prefetch)
+  trap 'printf "%s" "$ESC[?1003l$ESC[?1000l$ESC[?1006l$ESC[?25h"' EXIT
+  # (no screen clear: every frame overwrites each line and clears below, and a clear here
+  # flashed all sidebars whenever they restarted, e.g. on a script change)
+  printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1003h$ESC[?1006h"
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
   local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls
-  local issue_offset=0 issue_total=0 issue_mode=0 issue_sel=0
+  local issue_offset=0 issue_total=0 issue_mode=0 issue_sel=0 last_hover=
 
+  local version
+  version=$(stat -c %Y "$self")
   while true; do
+    # The script was edited: restart on the new code (keeps the pane and its options)
+    [ "$(stat -c %Y "$self")" = "$version" ] || exec "$self" render
     read -r width height panes visible focused < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active}')
     # Keyboard mode ends when you click or move away from the sidebar
     [ "$focused" = 1 ] || issue_mode=0
@@ -316,7 +355,12 @@ render() {
     if [ ${#issue_lines[@]} -gt 0 ]; then
       b_text+=("" "$rule" "") b_click+=("" "" "")
       for i in "${!issue_lines[@]}"; do
-        b_text+=("${issue_lines[i]}") b_click+=("${issue_urls[i]:+issue:${issue_urls[i]}}")
+        b_text+=("${issue_lines[i]}")
+        case ${issue_urls[i]} in
+          ttl) b_click+=(ttl) ;;
+          '') b_click+=("") ;;
+          *) b_click+=("issue:${issue_urls[i]}") ;;
+        esac
       done
     fi
 
@@ -331,9 +375,10 @@ render() {
     done
 
     local footer="q close · R refresh"
-    [ "$issue_mode" = 1 ] && footer="j/k move · ⏎ open · esc back"
+    [ "$issue_mode" = 1 ] && footer="j/k move · ⏎ open · t cache · esc"
     out+="${ESC}[K"$'\n'"${DIM}  ${footer}${RESET}${ESC}[K"
-    printf '%s' "$ESC[H$out$ESC[J"
+    # Synchronized output (mode 2026): tmux shows the frame only once it is complete
+    printf '%s' "$ESC[?2026h$ESC[H$out$ESC[J$ESC[?2026l"
 
     # The status bar normally drives tmux-continuum's autosave; with it hidden, the
     # visible sidebar does (continuum itself still only saves every @continuum-save-interval)
@@ -349,14 +394,24 @@ render() {
     # Wait up to 2s; `refresh` wakes us early by typing "r" into this pane. Everything that
     # arrived is then handled token by token: mouse reports, arrow keys, Esc, single keys.
     # (-d '' so Enter arrives as a newline instead of ending the read)
-    local key k tok
-    if read -rsn1 -d '' -t 2 key; then
-      while read -rsn1 -d '' -t 0.01 k; do key+=$k; done
+    # Mouse movement (hover) prefetches without a redraw, so moving over the sidebar stays cheap.
+    local key k tok acted=0 waited_from=$SECONDS
+    while [ "$acted" = 0 ] && [ $((SECONDS - waited_from)) -lt 2 ] &&
+      IFS= read -rsn1 -d '' -t 2 key; do
+      while IFS= read -rsn1 -d '' -t 0.01 k; do key+=$k; done
       while [ -n "$key" ]; do
         if [[ $key =~ ^$'\e'\[\<([0-9]+)\;[0-9]+\;([0-9]+)([Mm]) ]]; then
           # SGR mouse report: ESC [ < button ; column ; row M (press) or m (release)
           tok=${BASH_REMATCH[0]}
+          [ "${BASH_REMATCH[1]}" = 35 ] || acted=1
           case ${BASH_REMATCH[1]}${BASH_REMATCH[3]} in
+            35M) # movement with no button held: hover
+              local hovered=${click[${BASH_REMATCH[2]}]:-}
+              if [[ $hovered == issue:* && $hovered != "$last_hover" ]]; then
+                issue_prefetch "${hovered#issue:}"
+              fi
+              last_hover=$hovered
+              ;;
             64M) issue_scroll -1 ;;
             65M) issue_scroll 1 ;;
             0M)
@@ -368,22 +423,28 @@ render() {
                 issue:*) issue_open "${target#issue:}" ;;
                 todo:*) "$self" todo-done "${target#todo:}" ;;
                 todo-edit) "$self" todo-edit ;;
+                ttl) issue_ttl_cycle ;;
               esac
               ;;
           esac
         elif [[ $key == $'\e'[[O][AB]* ]]; then
+          acted=1
           tok=${key:0:3}
           [ "$issue_mode" = 1 ] && { [ "${tok:2}" = A ] && issue_move -1 || issue_move 1; }
         elif [[ $key == $'\e'* ]]; then
+          acted=1
           tok=${key:0:1}
           [ "$issue_mode" = 1 ] && issue_mode_exit
         else
+          acted=1
           tok=${key:0:1}
           case $tok in
             I) # sent by `claude-sidebar issues-focus` (prefix i)
               issue_mode=1
               [ "$issue_sel" -ge "$issue_offset" ] && [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_sel=$issue_offset
+              issue_prefetch_selected
               ;;
+            t) [ "$issue_mode" = 1 ] && issue_ttl_cycle ;;
             j) [ "$issue_mode" = 1 ] && issue_move 1 ;;
             k) [ "$issue_mode" = 1 ] && issue_move -1 ;;
             g) [ "$issue_mode" = 1 ] && issue_move -"$issue_total" ;;
@@ -411,7 +472,7 @@ render() {
         fi
         key=${key:${#tok}}
       done
-    fi
+    done
   done
 }
 
