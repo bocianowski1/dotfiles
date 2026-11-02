@@ -90,24 +90,47 @@ todo_lines() {
 
   local n=0 total=0 lineno text max=$((width - 5))
   if [ -f "$TODO_FILE" ]; then
-    while IFS=: read -r lineno text; do
+    lineno=0
+    while IFS= read -r text || [ -n "$text" ]; do
+      lineno=$((lineno + 1))
+      [[ $text =~ ^[[:space:]]*-\ \[\ \]\  ]] || continue
       total=$((total + 1))
       [ "$n" -lt "$TODO_MAX" ] || continue
       text=${text#*- \[ \] }
       [ ${#text} -gt "$max" ] && text="${text:0:max-1}…"
       todo_lines+=("  ${DIM}○${RESET} $text") todo_refs+=("$lineno")
       n=$((n + 1))
-    done < <(grep -n '^[[:space:]]*- \[ \] ' "$TODO_FILE")
+    done <"$TODO_FILE"
   fi
   [ "$total" -gt "$n" ] && todo_lines+=("${DIM}    +$((total - n)) more${RESET}") todo_refs+=(edit)
   [ "$total" -gt 0 ] || { todo_lines+=("${DIM}  Nothing to do${RESET}") todo_refs+=(""); }
+}
+
+# Tick off line <n> of TODO_FILE, only if it is still an open item (the file may have
+# changed). In bash, no sed: a click on a todo redraws straight after this.
+todo_tick() { # <line number>
+  local -a todo_file
+  local i=$(($1 - 1)) re='^([[:space:]]*)- \[ \] (.*)$'
+  mapfile -t todo_file 2>/dev/null <"$TODO_FILE" || return
+  [[ ${todo_file[i]:-} =~ $re ]] || return
+  todo_file[i]="${BASH_REMATCH[1]}- [x] ${BASH_REMATCH[2]}"
+  printf '%s\n' "${todo_file[@]}" >"$TODO_FILE"
+}
+
+# Redraw every sidebar but <pane> (that one redraws itself): one tmux call for them all
+refresh_others() { # [pane]
+  local p args=()
+  for p in $(sidebar_panes); do
+    [ "$p" = "${1:-}" ] || args+=(send-keys -t "$p" C-r \;)
+  done
+  [ ${#args[@]} -gt 0 ] && tmux "${args[@]:0:${#args[@]}-1}"
 }
 
 # Refresh the calendar cache in the background every 5 minutes, or now with "force"
 calendar_fetch() {
   [ -f "$CALENDAR_URL_FILE" ] || return
   local age=999999
-  [ -f "$CALENDAR_CACHE" ] && age=$(($(date +%s) - $(stat -c %Y "$CALENDAR_CACHE")))
+  [ -f "$CALENDAR_CACHE" ] && age=$((EPOCHSECONDS - $(stat -c %Y "$CALENDAR_CACHE")))
   [ "${1:-}" = force ] || [ "$age" -ge 300 ] || return
   mkdir -p "${CALENDAR_CACHE%/*}"
   { flock -n "${CALENDAR_CACHE%/*}/fetch.lock" "${self%/*}/claude-calendar" && "$self" refresh; } </dev/null >/dev/null 2>&1 &
@@ -189,7 +212,7 @@ issue_lines() {
 issues_fetch() {
   command -v gh >/dev/null || return
   local age=999999
-  [ -f "$ISSUES_CACHE" ] && age=$(($(date +%s) - $(stat -c %Y "$ISSUES_CACHE")))
+  [ -f "$ISSUES_CACHE" ] && age=$((EPOCHSECONDS - $(stat -c %Y "$ISSUES_CACHE")))
   [ "${1:-}" = force ] || [ "$age" -ge 300 ] || return
   mkdir -p "${ISSUES_CACHE%/*}"
   { flock -n "${ISSUES_CACHE%/*}/issues.lock" "${self%/*}/claude-issues" && "$self" refresh; } </dev/null >/dev/null 2>&1 &
@@ -261,7 +284,11 @@ activate() { # <click target>
     %*) tmux switch-client -t "$1" ;;
     url:*) open_url "${1#url:}" ;;
     issue:*) issue_open "${1#issue:}" ;;
-    todo:*) "$self" todo-done "${1#todo:}" ;;
+    todo:*)
+      # Optimistic: tick it off here and redraw at once; the other sidebars follow behind
+      todo_tick "${1#todo:}"
+      "$self" refresh-others "$TMUX_PANE" </dev/null >/dev/null 2>&1 &
+      ;;
     todo-edit) "$self" todo-edit ;;
     ttl) issue_ttl_cycle ;;
     filter) filter_typing=1 ;;
@@ -374,7 +401,10 @@ render() {
     if [ $((SECONDS - checked_at)) -ge 2 ]; then
       [ "$(stat -c %Y "$self")" = "$version" ] || exec "$self" render
     fi
-    read -r width height panes visible focused window_width window_id < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active} #{window_width} #{window_id}')
+    # This pane's size and state, then the session's panes (for the tree): one tmux call
+    local -a tmux_out
+    mapfile -t tmux_out < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active} #{window_width} #{window_id}' \; list-panes -s -t "$TMUX_PANE" -F "$FMT")
+    read -r width height panes visible focused window_width window_id <<<"${tmux_out[0]:-}"
     # Keyboard mode (and typing a filter) ends when you click or move away from the sidebar
     [ "$focused" = 1 ] || { nav=0; filter_typing=0; }
     load_issue_rows
@@ -433,7 +463,7 @@ render() {
         out+="$line${RESET}${ESC}[K"$'\n'
         click[$row]=$pid
         row=$((row + 1))
-      done < <(tmux list-panes -s -t "$TMUX_PANE" -F "$FMT")
+      done < <(printf '%s\n' "${tmux_out[@]:1}")
 
       # Bottom block, pinned above the footer: todo, calendar and issues, separated by lines.
       # Built as (text, click target) pairs first so the padding above it can be measured.
@@ -661,7 +691,8 @@ render() {
 case ${1:-} in
 toggle) if [ "$(tmux show -gv @claude_sidebar_on 2>/dev/null)" = 1 ]; then off; else on; fi ;;
 add) [ "$(tmux show -gv @claude_sidebar_on 2>/dev/null)" = 1 ] && add "$2" ;;
-refresh) for p in $(sidebar_panes); do tmux send-keys -t "$p" C-r; done ;; # \x12, not a letter: no typing clash
+refresh) refresh_others ;; # C-r is \x12, not a letter: no typing clash
+refresh-others) refresh_others "$2" ;;
 opened)
   # Window switch hook: remember when <window> was opened, then redraw
   tmux set -w -t "$2" @last_opened "$(date +%s)"
@@ -714,9 +745,8 @@ todo-read)
   "$self" refresh
   ;;
 todo-done)
-  # Tick off line $2, but only if it is still an open item (the file may have changed)
-  sed -i "${2}s/^\([[:space:]]*\)- \[ \] /\1- [x] /" "$TODO_FILE"
-  "$self" refresh
+  todo_tick "$2"
+  refresh_others
   ;;
 todo-edit)
   mkdir -p "${TODO_FILE%/*}"
