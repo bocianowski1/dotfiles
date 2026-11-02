@@ -5,6 +5,7 @@
 #   claude-sidebar add <window>  give <window> a sidebar if sidebars are on (tmux hook)
 #   claude-sidebar opened <window> record when <window> was switched to (tmux hook)
 #   claude-sidebar refresh       redraw every sidebar now (tmux and Claude hooks)
+#   claude-sidebar mark [window] mark/unmark a window (green in the sidebar; prefix m)
 #   claude-sidebar todo-*        add, tick off and edit todos (sidebar keys a/e, clicks, prefix T)
 #   claude-sidebar focus-in      refetch issues after one was opened from the sidebar (tmux hook)
 #   claude-sidebar focus [issues] keyboard into the sidebar (prefix e) or its issues (prefix i):
@@ -14,7 +15,7 @@
 WIDTH=34
 self=$(readlink -f "$0")
 US=$'\x1f' # field separator: not whitespace, so empty fields survive read
-FMT="#{window_id}${US}#{pane_id}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{pane_active}${US}#{@claude_state}${US}#{pane_title}${US}#{pane_current_path}${US}#{pane_current_command}${US}#{@claude_sidebar}${US}#{@last_opened}"
+FMT="#{window_id}${US}#{pane_id}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{pane_active}${US}#{@claude_state}${US}#{pane_title}${US}#{pane_current_path}${US}#{pane_current_command}${US}#{@claude_sidebar}${US}#{@last_opened}${US}#{@claude_marked}"
 
 sidebar_panes() {
   tmux list-panes -a -F '#{pane_id} #{@claude_sidebar}' | awk '$2 == "1" { print $1 }'
@@ -340,7 +341,7 @@ render() {
 
   local ESC=$'\e'
   local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
-  local ACTIVE="$ESC[38;5;215m" WINDOW="$ESC[38;5;110m"
+  local ACTIVE="$ESC[38;5;215m" WINDOW="$ESC[38;5;110m" MARKED="$ESC[38;5;114m"
   # Ask gh for the torgermalling token once; the issue jobs this sidebar starts reuse it
   if command -v gh >/dev/null && [ -z "${CLAUDE_SIDEBAR_GH_TOKEN:-}" ]; then
     CLAUDE_SIDEBAR_GH_TOKEN=$(gh auth token --user torgermalling 2>/dev/null)
@@ -361,8 +362,8 @@ render() {
   local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls issue_rows nav_order
   local issue_offset=0 issue_total=0 issue_sel=0 issue_filter= filter_typing=0 last_hover= followed_issue=
   local nav=0 nav_target= issue_url= window_width=0 window_id= checked_at=-99
-  # Only follow issues the popup moves to from now on, not one it showed before we started
   local last_frame=
+  # Only follow issues the popup moves to from now on, not one it showed before we started
   followed_issue=$(tmux show -gv @claude_issue_selected 2>/dev/null)
 
   local version
@@ -388,11 +389,12 @@ render() {
       click=()
       local today
       printf -v today '%(%F)T' -1
-      while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened; do
+      while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened marked; do
         if [ "$widx" != "$last_win" ]; then
           [ -n "$last_win" ] && out+="${ESC}[K"$'\n' && row=$((row + 1))
           local colour=$WINDOW
-          [ "$wactive" = 1 ] && colour=$ACTIVE
+          [ "$marked" = 1 ] && colour=$MARKED
+          [ "$wactive" = 1 ] && colour=$ACTIVE # the window you are in stays orange, marked or not
 
           # When you last switched to this window: "10:15" today, "31.10" on earlier days
           local when= day
@@ -666,6 +668,17 @@ opened)
   "$self" refresh
   ;;
 render) render ;;
+mark)
+  # Toggle a window's mark (default: the current one): a visual tag for the projects you
+  # are switching between
+  win=${2:-$(tmux display -p '#{window_id}')}
+  if [ "$(tmux show -wv -t "$win" @claude_marked 2>/dev/null)" = 1 ]; then
+    tmux set -wu -t "$win" @claude_marked
+  else
+    tmux set -w -t "$win" @claude_marked 1
+  fi
+  "$self" refresh
+  ;;
 focus | issues-focus)
   # prefix e (focus sidebar) / prefix i (focus issues): keyboard into the current window's sidebar
   [ "$(tmux show -gv @claude_sidebar_on 2>/dev/null)" = 1 ] || on
@@ -711,7 +724,7 @@ todo-edit)
   tmux display-popup -E -w 70% -h 60% -T " Todo " "${EDITOR:-nvim} '$TODO_FILE'; '$self' refresh"
   ;;
 *)
-  echo "usage: claude-sidebar toggle | add <window-id> | opened <window-id> | refresh | render | todo-prompt | todo-read | todo-done <line> | todo-edit | focus-in | focus [issues]" >&2
+  echo "usage: claude-sidebar toggle | add <window-id> | mark [window-id] | opened <window-id> | refresh | render | todo-prompt | todo-read | todo-done <line> | todo-edit | focus-in | focus [issues]" >&2
   exit 1
   ;;
 esac
