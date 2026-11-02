@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge hooks.json into ~/.claude/settings.json, replacing only its "hooks" key.
+"""Merge hooks.json into ~/.claude/settings.json, replacing only its "hooks" and "statusLine" keys.
 
 The rest of settings.json (model, plugins, autoMode, ...) is machine-specific and stays local.
 Hook commands use $HOME, which the shell running each hook expands.
@@ -7,10 +7,13 @@ Hook commands use $HOME, which the shell running each hook expands.
 import json
 from pathlib import Path
 
-hooks = json.loads((Path(__file__).resolve().parent / "hooks.json").read_text())["hooks"]
+config = json.loads((Path(__file__).resolve().parent / "hooks.json").read_text())
+hooks = config["hooks"]
 settings_path = Path.home() / ".claude" / "settings.json"
 settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
 settings["hooks"] = hooks
+if "statusLine" in config:
+    settings["statusLine"] = config["statusLine"]
 settings_path.parent.mkdir(parents=True, exist_ok=True)
 settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
 print(f"Installed {sum(len(v) for v in hooks.values())} hook groups into {settings_path}")

@@ -224,6 +224,79 @@ issue_mode_exit() {
   tmux last-pane -t "$TMUX_PANE" 2>/dev/null || focus_window "$(tmux display -p -t "$TMUX_PANE" '#{window_id}')"
 }
 
+USAGE_DIR=~/.cache/claude-sidebar/usage # written by the Claude Code status line (claude/bin/statusline)
+
+# Claude usage bars into usage_lines: the account's 5-hour and weekly limits (from whichever
+# session reported last) and the context use of the Claude session in <window>
+usage_lines() { # <width> <window-id>
+  local width=$1 window=$2 ESC=$'\e'
+  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
+  usage_lines=()
+  [ -d "$USAGE_DIR" ] || return
+
+  # Only panes that still exist; the newest report holds the freshest rate limits
+  local live latest= ctx_file= f pane
+  live=$(tmux list-panes -a -F '#{pane_id}' | tr -d '%')
+  for f in $(ls -t "$USAGE_DIR"/*.tsv 2>/dev/null); do
+    pane=$(basename "$f" .tsv)
+    grep -qx "$pane" <<<"$live" || continue
+    [ -n "$latest" ] || latest=$f
+  done
+  [ -n "$latest" ] || return
+  # Context: the active pane of this window if it is a Claude session, else another Claude
+  # pane in this window, else the latest session anywhere
+  local active
+  active=$(tmux display -p -t "$window" '#{pane_id}' | tr -d '%')
+  if [ -f "$USAGE_DIR/$active.tsv" ]; then ctx_file=$USAGE_DIR/$active.tsv
+  else
+    for pane in $(tmux list-panes -t "$window" -F '#{pane_id}' | tr -d '%'); do
+      [ -f "$USAGE_DIR/$pane.tsv" ] && { ctx_file=$USAGE_DIR/$pane.tsv; break; }
+    done
+    [ -n "$ctx_file" ] || ctx_file=$latest
+  fi
+
+  local -A u=() c=()
+  local k v
+  while IFS=$'\t' read -r k v; do u[$k]=$v; done <"$latest"
+  while IFS=$'\t' read -r k v; do c[$k]=$v; done <"$ctx_file"
+
+  local now
+  printf -v now '%(%s)T' -1
+  usage_lines+=("${BOLD} Claude usage${RESET}${DIM}$(printf '%*s' $((width - 14)) "${c[model]:-}")${RESET}")
+  usage_bar "5h" "${u[five_hour_pct]:-}" "${u[five_hour_resets]:-}" "$now" "$width"
+  usage_bar "week" "${u[seven_day_pct]:-}" "${u[seven_day_resets]:-}" "$now" "$width"
+  usage_bar "ctx" "${c[ctx_pct]:-}" "" "$now" "$width"
+}
+
+# One bar: "5h   ███░░░░░░░░   8%  1h52m" (orange from 50%, red from 80%)
+usage_bar() { # <label> <percent> <resets-at epoch or ""> <now> <width>
+  local label=$1 pct=$2 resets=$3 now=$4 width=$5 ESC=$'\e'
+  local RESET="$ESC[0m" DIM="$ESC[38;5;245m" when=
+  if [ -n "$resets" ]; then
+    local left=$((resets - now))
+    if [ "$left" -le 0 ]; then
+      pct=0 # the window has reset since the last report
+    elif [ "$left" -ge 86400 ]; then when="$((left / 86400))d$(((left % 86400) / 3600))h"
+    elif [ "$left" -ge 3600 ]; then when="$((left / 3600))h$(((left % 3600) / 60))m"
+    else when="$((left / 60))m"
+    fi
+  fi
+  if [ -z "$pct" ]; then
+    usage_lines+=("  $(printf '%-5s' "$label")${DIM}no data${RESET}")
+    return
+  fi
+  pct=${pct%%.*}
+  local colour="$ESC[38;5;114m" bar_w=$((width - 22)) filled
+  [ "$pct" -ge 50 ] && colour="$ESC[38;5;214m"
+  [ "$pct" -ge 80 ] && colour="$ESC[38;5;203m"
+  filled=$(((pct * bar_w + 50) / 100))
+  [ "$filled" -le "$bar_w" ] || filled=$bar_w
+  local full empty
+  printf -v full '%*s' "$filled" ''
+  printf -v empty '%*s' $((bar_w - filled)) ''
+  usage_lines+=("  $(printf '%-5s' "$label")${colour}${full// /█}${DIM}${empty// /░}${RESET} $(printf '%4s' "$pct%") ${DIM}$(printf '%-6s' "$when")${RESET}")
+}
+
 # Open a Teams join link in Windows (the browser hands it on to Teams)
 open_url() {
   if command -v explorer.exe >/dev/null; then explorer.exe "$1" >/dev/null 2>&1 &
@@ -275,7 +348,7 @@ render() {
   # flashed all sidebars whenever they restarted, e.g. on a script change)
   printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1003h$ESC[?1006h"
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
-  local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls
+  local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls usage_lines
   local issue_offset=0 issue_total=0 issue_mode=0 issue_sel=0 last_hover= followed_issue=
 
   local version
@@ -371,6 +444,14 @@ render() {
           *) b_click+=("issue:${issue_urls[i]}") ;;
         esac
       done
+    fi
+
+    local window_id
+    window_id=$(tmux display -p -t "$TMUX_PANE" '#{window_id}')
+    usage_lines "$width" "$window_id"
+    if [ ${#usage_lines[@]} -gt 0 ]; then
+      b_text+=("" "$rule" "") b_click+=("" "" "")
+      for i in "${!usage_lines[@]}"; do b_text+=("${usage_lines[i]}") b_click+=(""); done
     fi
 
     local pad=$((height - (row - 1) - ${#b_text[@]} - 2))
