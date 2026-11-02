@@ -1,0 +1,79 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["icalendar>=6", "recurring-ical-events>=3"]
+# ///
+"""Fetch the published Outlook calendar and cache the next meetings for the tmux sidebar.
+
+Reads the secret .ics link from ~/.config/claude-sidebar/calendar-url (kept out of dotfiles)
+and writes ~/.cache/claude-sidebar/calendar.tsv with one meeting per line:
+    start_epoch <TAB> end_epoch <TAB> title <TAB> join_url
+covering now until the end of tomorrow. Cancelled and all-day events are left out.
+
+Usage: claude-calendar [--file some.ics]   (--file reads a local file instead, for testing)
+"""
+import datetime as dt
+import os
+import re
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+
+import icalendar
+import recurring_ical_events
+
+URL_FILE = Path.home() / ".config/claude-sidebar/calendar-url"
+CACHE = Path.home() / ".cache/claude-sidebar/calendar.tsv"
+JOIN_URL = re.compile(r"https://teams\.microsoft\.com/l/meetup-join/[^\s<>\"']+")
+CANCELLED_PREFIXES = ("canceled:", "cancelled:", "avlyst:")
+
+
+def load_calendar() -> icalendar.Calendar:
+    if len(sys.argv) == 3 and sys.argv[1] == "--file":
+        return icalendar.Calendar.from_ical(Path(sys.argv[2]).read_bytes())
+    url = URL_FILE.read_text().strip()
+    with urllib.request.urlopen(url, timeout=20) as response:
+        return icalendar.Calendar.from_ical(response.read())
+
+
+def join_url(event) -> str:
+    for field in ("X-MICROSOFT-SKYPETEAMSMEETINGURL", "LOCATION", "DESCRIPTION", "X-ALT-DESC"):
+        match = JOIN_URL.search(str(event.get(field, "")))
+        if match:
+            return match.group(0)
+    return ""
+
+
+def main() -> None:
+    now = dt.datetime.now().astimezone()
+    until = (now + dt.timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = []
+    for event in recurring_ical_events.of(load_calendar()).between(now, until):
+        start, end = event["DTSTART"].dt, event["DTEND"].dt if "DTEND" in event else None
+        if not isinstance(start, dt.datetime):
+            continue  # all-day
+        title = " ".join(str(event.get("SUMMARY", "(no title)")).split())
+        if str(event.get("STATUS", "")).upper() == "CANCELLED" or title.lower().startswith(CANCELLED_PREFIXES):
+            continue
+        if start.tzinfo is None:
+            start = start.astimezone()
+        end = end if isinstance(end, dt.datetime) else start + dt.timedelta(minutes=30)
+        if end.tzinfo is None:
+            end = end.astimezone()
+        if end <= now:
+            continue
+        rows.append((int(start.timestamp()), int(end.timestamp()), title.replace("\t", " "), join_url(event)))
+
+    rows.sort()
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    # Write atomically and privately: meeting titles can be personal
+    fd, tmp = tempfile.mkstemp(dir=CACHE.parent)
+    with os.fdopen(fd, "w") as f:
+        f.writelines("\t".join(map(str, row)) + "\n" for row in rows)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CACHE)
+
+
+if __name__ == "__main__":
+    main()

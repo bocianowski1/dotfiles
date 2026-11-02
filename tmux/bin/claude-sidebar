@@ -22,6 +22,68 @@ add() {
   tmux split-window -d -f -h -b -l "$WIDTH" -t "$window" "'$self' render"
 }
 
+CALENDAR_URL_FILE=~/.config/claude-sidebar/calendar-url
+CALENDAR_CACHE=~/.cache/claude-sidebar/calendar.tsv
+CALENDAR_MAX=5 # meetings shown
+
+# Calendar lines for the bottom of the sidebar, into the array cal_lines (and the Teams
+# join link for each line into cal_urls). Reads the cache written by claude-calendar.
+calendar_lines() {
+  local width=$1 now=$2 ESC=$'\e'
+  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
+  cal_lines=() cal_urls=()
+  [ -f "$CALENDAR_URL_FILE" ] || return
+  local today tomorrow shown=0 last_label= start end title url
+  printf -v today '%(%F)T' "$now"
+  printf -v tomorrow '%(%F)T' $((now + 86400))
+  [ -s "$CALENDAR_CACHE" ] || { cal_lines+=("${DIM} No meetings today${RESET}") cal_urls+=(""); return; }
+
+  while IFS=$'\t' read -r start end title url; do
+    [ "$end" -gt "$now" ] || continue
+    [ "$shown" -lt "$CALENDAR_MAX" ] || break
+    local day label
+    printf -v day '%(%F)T' "$start"
+    case $day in "$today") label=Today ;; "$tomorrow") label=Tomorrow ;; *) continue ;; esac
+    if [ "$label" != "$last_label" ]; then
+      [ -n "$last_label" ] && cal_lines+=("") cal_urls+=("")
+      [ "$label" = Tomorrow ] && [ -z "$last_label" ] && cal_lines+=("${DIM} No more meetings today${RESET}") cal_urls+=("") && cal_lines+=("") cal_urls+=("")
+      cal_lines+=("${BOLD} ${label}${RESET}") cal_urls+=("")
+      last_label=$label
+    fi
+
+    # "now" while it runs, "in 12m" within the hour (orange from 10 minutes before)
+    local tag= tagc=$DIM mins=$(((start - now + 59) / 60))
+    if [ "$start" -le "$now" ]; then tag=now tagc="$ESC[38;5;114m"
+    elif [ "$mins" -le 60 ]; then tag="in ${mins}m"; [ "$mins" -le 10 ] && tagc="$ESC[1;38;5;214m"
+    fi
+    local hhmm max=$((width - 16))
+    printf -v hhmm '%(%H:%M)T' "$start"
+    [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
+    local line
+    printf -v line '  %s%s%s %-*s %s%6s%s' "$DIM" "$hhmm" "$RESET" "$max" "$title" "$tagc" "$tag" "$RESET"
+    cal_lines+=("$line") cal_urls+=("$url")
+    shown=$((shown + 1))
+  done <"$CALENDAR_CACHE"
+  [ "$shown" -gt 0 ] || { cal_lines+=("${DIM} No more meetings${RESET}") cal_urls+=(""); }
+}
+
+# Refresh the calendar cache in the background every 5 minutes (one fetch at a time)
+calendar_fetch() {
+  [ -f "$CALENDAR_URL_FILE" ] || return
+  local age=999999
+  [ -f "$CALENDAR_CACHE" ] && age=$(($(date +%s) - $(stat -c %Y "$CALENDAR_CACHE")))
+  [ "$age" -ge 300 ] || return
+  mkdir -p "${CALENDAR_CACHE%/*}"
+  flock -n "${CALENDAR_CACHE%/*}/fetch.lock" "${self%/*}/claude-calendar" >/dev/null 2>&1 &
+}
+
+# Open a Teams join link in Windows (the browser hands it on to Teams)
+open_url() {
+  if command -v explorer.exe >/dev/null; then explorer.exe "$1" >/dev/null 2>&1 &
+  elif command -v xdg-open >/dev/null; then xdg-open "$1" >/dev/null 2>&1 &
+  fi
+}
+
 # Focus <window> on the pane you were using there, never its sidebar
 focus_window() {
   local pane
@@ -60,10 +122,11 @@ render() {
   # Hide the cursor and ask for SGR mouse clicks so groups and items are clickable
   trap 'printf "%s" "$ESC[?1000l$ESC[?1006l$ESC[?25h"' EXIT
   printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1006h$ESC[2J"
-  local -A click # screen row -> window id (group) or pane id (item)
+  local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
+  local -a cal_lines cal_urls
 
   while true; do
-    read -r width panes visible < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{window_panes} #{window_active}')
+    read -r width height panes visible < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active}')
     # Only the sidebar is left in this window: close the window
     if [ "$panes" = 1 ]; then tmux kill-window -t "$TMUX_PANE"; exit 0; fi
 
@@ -113,6 +176,22 @@ render() {
       row=$((row + 1))
     done < <(tmux list-panes -s -t "$TMUX_PANE" -F "$FMT")
 
+    # Calendar pinned to the bottom, above the footer
+    local now
+    printf -v now '%(%s)T' -1
+    calendar_lines "$width" "$now"
+    if [ ${#cal_lines[@]} -gt 0 ]; then
+      local pad=$((height - (row - 1) - ${#cal_lines[@]} - 2)) i
+      [ "$pad" -ge 1 ] || pad=1
+      for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
+      row=$((row + pad))
+      for i in "${!cal_lines[@]}"; do
+        out+="${cal_lines[i]}${ESC}[K"$'\n'
+        [ -n "${cal_urls[i]}" ] && click[$row]="url:${cal_urls[i]}"
+        row=$((row + 1))
+      done
+    fi
+
     out+="${ESC}[K"$'\n'"${DIM}  q close · prefix a jump${RESET}${ESC}[K"
     printf '%s' "$ESC[H$out$ESC[J"
 
@@ -122,6 +201,7 @@ render() {
       "$continuum" >/dev/null 2>&1 &
       last_continuum=$SECONDS
     fi
+    [ "$visible" = 1 ] && calendar_fetch
 
     # Wait up to 2s; `refresh` wakes us early by typing "r" into this pane
     local key k
@@ -133,6 +213,7 @@ render() {
         case $target in
           @*) focus_window "$target" ;;
           %*) tmux switch-client -t "$target" ;;
+          url:*) open_url "${target#url:}" ;;
         esac
       elif [[ $key == *q* ]]; then
         off
