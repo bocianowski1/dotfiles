@@ -436,8 +436,10 @@ view() {
     tmux set -g @claude_issue_selected "$url"
     "$(dirname "$(readlink -f "$0")")/claude-sidebar" refresh >/dev/null 2>&1
     local nb
+    # (only those not cached yet; after ↑/↓ the one behind you is, so it is the next one
+    # in the direction you are going; 9>&-: not holding this issue's lock while they run)
     for nb in "$(neighbour -1)" "$(neighbour 1)"; do
-      [ -n "$nb" ] && "$0" prefetch "$nb" "$width" >/dev/null 2>&1 &
+      [ -n "$nb" ] && "$0" prefetch "$nb" "$width" 9>&- </dev/null >/dev/null 2>&1 &
     done
   }
 
