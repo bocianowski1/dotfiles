@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Claude Code sidebar for tmux. Every window gets its own sidebar pane on the left, so
+# switching windows never resizes anything; they all show the same tree.
+#   claude-sidebar toggle        turn sidebars on (hides the status bar) or off
+#   claude-sidebar add <window>  give <window> a sidebar if sidebars are on (tmux hook)
+#   claude-sidebar opened <window> record when <window> was switched to (tmux hook)
+#   claude-sidebar refresh       redraw every sidebar now (tmux and Claude hooks)
+#   claude-sidebar render        draw loop running inside a sidebar pane
+# Each window is a group; each Claude pane in it is an item with a state dot on the right.
+WIDTH=34
+self=$(readlink -f "$0")
+US=$'\x1f' # field separator: not whitespace, so empty fields survive read
+FMT="#{window_id}${US}#{pane_id}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{pane_active}${US}#{@claude_state}${US}#{pane_title}${US}#{pane_current_path}${US}#{pane_current_command}${US}#{@claude_sidebar}${US}#{@last_opened}"
+
+sidebar_panes() {
+  tmux list-panes -a -F '#{pane_id} #{@claude_sidebar}' | awk '$2 == "1" { print $1 }'
+}
+
+add() {
+  local window=$1
+  tmux list-panes -t "$window" -F '#{@claude_sidebar}' | grep -qx 1 && return
+  tmux split-window -d -f -h -b -l "$WIDTH" -t "$window" "'$self' render"
+}
+
+# Focus <window> on the pane you were using there, never its sidebar
+focus_window() {
+  local pane
+  pane=$(tmux list-panes -t "$1" -F '#{pane_active} #{pane_last} #{pane_id} #{@claude_sidebar}' |
+    awk '$4 != "1" { score = $1 * 2 + $2; if (!found || score > best) { best = score; id = $3; found = 1 } }
+         END { print id }')
+  [ -n "$pane" ] && tmux switch-client -t "$pane"
+}
+
+on() {
+  tmux set -g @claude_sidebar_on 1
+  tmux set -g status off
+  for w in $(tmux list-windows -a -F '#{window_id}'); do add "$w"; done
+}
+
+off() {
+  tmux set -gu @claude_sidebar_on
+  tmux set -g status on
+  # When run from inside a sidebar (the q key), close that pane last
+  for p in $(sidebar_panes); do [ "$p" = "${TMUX_PANE:-}" ] || tmux kill-pane -t "$p"; done
+  sidebar_panes | grep -qx "${TMUX_PANE:-none}" && tmux kill-pane -t "$TMUX_PANE"
+}
+
+render() {
+  # Mark this pane (also after a tmux-resurrect restore, which starts us without the option)
+  tmux set -p -t "$TMUX_PANE" @claude_sidebar 1
+  tmux set -g @claude_sidebar_on 1
+  tmux set -g status off
+
+  local ESC=$'\e'
+  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
+  local ACTIVE="$ESC[38;5;215m" WINDOW="$ESC[38;5;110m"
+  local host continuum last_continuum=0
+  host=$(hostname)
+  continuum=~/.tmux/plugins/tmux-continuum/scripts/continuum_save.sh
+  # Hide the cursor and ask for SGR mouse clicks so groups and items are clickable
+  trap 'printf "%s" "$ESC[?1000l$ESC[?1006l$ESC[?25h"' EXIT
+  printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1006h$ESC[2J"
+  local -A click # screen row -> window id (group) or pane id (item)
+
+  while true; do
+    read -r width panes visible < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{window_panes} #{window_active}')
+    # Only the sidebar is left in this window: close the window
+    if [ "$panes" = 1 ]; then tmux kill-window -t "$TMUX_PANE"; exit 0; fi
+
+    local out="${BOLD} Claude Code${RESET}${ESC}[K"$'\n'"${ESC}[K"$'\n'
+    local last_win= row=3
+    click=()
+    local today
+    printf -v today '%(%F)T' -1
+    while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened; do
+      if [ "$widx" != "$last_win" ]; then
+        [ -n "$last_win" ] && out+="${ESC}[K"$'\n' && row=$((row + 1))
+        local colour=$WINDOW
+        [ "$wactive" = 1 ] && colour=$ACTIVE
+
+        # When you last switched to this window: "10:15" today, "31.10" on earlier days
+        local when= day
+        if [ -n "$opened" ]; then
+          printf -v day '%(%F)T' "$opened"
+          if [ "$day" = "$today" ]; then printf -v when '%(%H:%M)T' "$opened"; else printf -v when '%(%d.%m)T' "$opened"; fi
+        fi
+        local name=" ${widx} ${wname}" room=$((width - 7))
+        [ ${#name} -gt "$room" ] && name="${name:0:room-1}…"
+        out+=$(printf '%s%s%-*s%s %s' "$colour" "$BOLD" "$room" "$name" "$RESET$DIM" "$when")"${RESET}${ESC}[K"$'\n'
+        click[$row]=$wid
+        row=$((row + 1))
+        last_win=$widx
+      fi
+      [ "$sidebar" != 1 ] || continue
+      [ -n "$state" ] || [ "$cmd" = claude ] || continue
+
+      # Claude's pane title is "<spinner> <task summary>"; fall back to the directory name
+      title=${title#"${title%%[[:alnum:]]*}"}
+      case $title in "" | */* | "$host") title=${path##*/} ;; esac
+      local dot
+      case $state in
+        attention) dot="$ESC[1;38;5;214m●" ;;
+        running) dot="$ESC[38;5;114m●" ;;
+        idle) dot="$ESC[38;5;245m●" ;;
+        *) dot="$ESC[38;5;240m○" ;; # Claude is running, but its hooks have not reported yet
+      esac
+      local marker=' '
+      [ "$wactive$pactive" = 11 ] && marker='▸'
+      local max=$((width - 7))
+      [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
+      out+=$(printf '  %s %-*s %s' "$marker" "$max" "$title" "$dot")"${RESET}${ESC}[K"$'\n'
+      click[$row]=$pid
+      row=$((row + 1))
+    done < <(tmux list-panes -s -t "$TMUX_PANE" -F "$FMT")
+
+    out+="${ESC}[K"$'\n'"${DIM}  q close · prefix a jump${RESET}${ESC}[K"
+    printf '%s' "$ESC[H$out$ESC[J"
+
+    # The status bar normally drives tmux-continuum's autosave; with it hidden, the
+    # visible sidebar does (continuum itself still only saves every @continuum-save-interval)
+    if [ "$visible" = 1 ] && [ $((SECONDS - last_continuum)) -ge 60 ] && [ -x "$continuum" ]; then
+      "$continuum" >/dev/null 2>&1 &
+      last_continuum=$SECONDS
+    fi
+
+    # Wait up to 2s; `refresh` wakes us early by typing "r" into this pane
+    local key k
+    if read -rsn1 -t 2 key; then
+      while read -rsn1 -t 0.01 k; do key+=$k; done
+      # Left-button press, SGR encoding: ESC [ < 0 ; column ; row M
+      if [[ $key =~ $'\e'\[\<0\;[0-9]+\;([0-9]+)M ]]; then
+        local target=${click[${BASH_REMATCH[1]}]:-}
+        case $target in
+          @*) focus_window "$target" ;;
+          %*) tmux switch-client -t "$target" ;;
+        esac
+      elif [[ $key == *q* ]]; then
+        off
+        exit 0
+      fi
+    fi
+  done
+}
+
+case ${1:-} in
+toggle) if [ "$(tmux show -gv @claude_sidebar_on 2>/dev/null)" = 1 ]; then off; else on; fi ;;
+add) [ "$(tmux show -gv @claude_sidebar_on 2>/dev/null)" = 1 ] && add "$2" ;;
+refresh) for p in $(sidebar_panes); do tmux send-keys -t "$p" r; done ;;
+opened)
+  # Window switch hook: remember when <window> was opened, then redraw
+  tmux set -w -t "$2" @last_opened "$(date +%s)"
+  "$self" refresh
+  ;;
+render) render ;;
+*)
+  echo "usage: claude-sidebar toggle | add <window-id> | opened <window-id> | refresh | render" >&2
+  exit 1
+  ;;
+esac
+exit 0

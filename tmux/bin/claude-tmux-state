@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Called by Claude Code hooks: claude-tmux-state running|attention|idle|clear
+# Tags the tmux pane Claude runs in, and rolls the most urgent state up to its window.
+[ -n "$TMUX_PANE" ] || exit 0
+state=$1
+{
+  if [ "$state" = clear ]; then
+    tmux set -pu -t "$TMUX_PANE" @claude_state
+  else
+    tmux set -p -t "$TMUX_PANE" @claude_state "$state"
+  fi
+
+  states=$(tmux list-panes -t "$TMUX_PANE" -F '#{@claude_state}')
+  case $states in
+    *attention*) win=attention ;;
+    *running*)   win=running ;;
+    *idle*)      win=idle ;;
+    *)           win= ;;
+  esac
+  if [ -n "$win" ]; then
+    tmux set -w -t "$TMUX_PANE" @claude_win "$win"
+  else
+    tmux set -wu -t "$TMUX_PANE" @claude_win
+  fi
+  tmux refresh-client -S
+  "$(dirname "$(readlink -f "$0")")/claude-sidebar" refresh
+} >/dev/null 2>&1
+exit 0

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Popup menu of every Claude Code pane, most urgent first. Pick one to jump to it.
+client=${1:-}
+keys=(1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p r s t u v w x y z)
+
+rows=$(tmux list-panes -a -F '#{@claude_state}	#{pane_id}	#{session_name}:#{window_index}	#{window_name}	#{pane_current_path}' |
+  awk -F'\t' '$1!="" { p = ($1=="attention") ? 0 : ($1=="running") ? 1 : 2; print p "\t" $0 }' |
+  sort -t$'\t' -k1,1n -k4,4V | cut -f2-)
+
+if [ -z "$rows" ]; then
+  tmux display-message ${client:+-c "$client"} "No Claude Code sessions"
+  exit 0
+fi
+
+args=()
+i=0
+while IFS=$'\t' read -r state pane target name path; do
+  case $state in
+    attention) dot='#[fg=colour214,bold]● needs you#[default]' ;;
+    running)   dot='#[fg=colour114]● running  #[default]' ;;
+    *)         dot='#[fg=colour245]● idle     #[default]' ;;
+  esac
+  path=${path/#$HOME/\~}
+  label=$(printf '%s  %-6s %-14s %s' "$dot" "$target" "$name" "$path")
+  args+=("$label" "${keys[i]:-}" "switch-client -t '$pane'")
+  i=$((i + 1))
+done <<< "$rows"
+
+tmux display-menu ${client:+-c "$client"} -T '#[align=centre] Claude Code ' -x C -y C "${args[@]}"
