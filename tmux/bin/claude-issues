@@ -25,7 +25,8 @@ trap 'rm -f "$tmp" "$tmp.all"' EXIT
 closed=${CACHE%/*}/closed.tsv
 if [ -f "$closed" ]; then
   awk -F'\t' -v cutoff=$(($(date +%s) - 900)) '$2 >= cutoff' "$closed" >"$closed.tmp" && mv "$closed.tmp" "$closed"
-  awk -F'\t' 'NR == FNR { gone[$1] = 1; next } !($5 in gone)' "$closed" "$tmp.all" >"$tmp"
+  # (FILENAME, not NR == FNR: with an empty closed.tsv that test would match every issue)
+  awk -F'\t' -v closed="$closed" 'FILENAME == closed { gone[$1] = 1; next } !($5 in gone)' "$closed" "$tmp.all" >"$tmp"
 else
   mv "$tmp.all" "$tmp"
 fi

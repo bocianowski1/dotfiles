@@ -21,6 +21,8 @@ sidebar_panes() {
 
 add() {
   local window=$1
+  # The issue image viewer gets the whole window
+  [ "$(tmux display -p -t "$window" '#{window_name}')" = issue-image ] && return
   tmux list-panes -t "$window" -F '#{@claude_sidebar}' | grep -qx 1 && return
   tmux split-window -d -f -h -b -l "$WIDTH" -t "$window" "'$self' render"
 }
@@ -104,7 +106,7 @@ calendar_fetch() {
   [ -f "$CALENDAR_CACHE" ] && age=$(($(date +%s) - $(stat -c %Y "$CALENDAR_CACHE")))
   [ "${1:-}" = force ] || [ "$age" -ge 300 ] || return
   mkdir -p "${CALENDAR_CACHE%/*}"
-  { flock -n "${CALENDAR_CACHE%/*}/fetch.lock" "${self%/*}/claude-calendar" && "$self" refresh; } >/dev/null 2>&1 &
+  { flock -n "${CALENDAR_CACHE%/*}/fetch.lock" "${self%/*}/claude-calendar" && "$self" refresh; } </dev/null >/dev/null 2>&1 &
 }
 
 ISSUES_CACHE=~/.cache/claude-sidebar/issues.tsv
@@ -156,7 +158,7 @@ issues_fetch() {
   [ -f "$ISSUES_CACHE" ] && age=$(($(date +%s) - $(stat -c %Y "$ISSUES_CACHE")))
   [ "${1:-}" = force ] || [ "$age" -ge 300 ] || return
   mkdir -p "${ISSUES_CACHE%/*}"
-  { flock -n "${ISSUES_CACHE%/*}/issues.lock" "${self%/*}/claude-issues" && "$self" refresh; } >/dev/null 2>&1 &
+  { flock -n "${ISSUES_CACHE%/*}/issues.lock" "${self%/*}/claude-issues" && "$self" refresh; } </dev/null >/dev/null 2>&1 &
 }
 
 # Issue list keyboard mode (prefix i). These work on render()'s locals.
@@ -181,10 +183,7 @@ issue_move() { # $1 issues; scrolls to keep the selection visible, prefetches th
   issue_prefetch_selected
 }
 issue_open() { # $1 url: the issue view popup (claude-issue), over the window this sidebar is in
-  local window ref
-  window=$(tmux display -p -t "$TMUX_PANE" '#{window_id}')
-  ref=$(sed -E 's#.*github\.com/[^/]+/([^/]+)/issues/([0-9]+).*#\1\#\2#' <<<"$1")
-  tmux display-popup -E -w 85% -h 85% -T " $ref " "'${self%/*}/claude-issue' view '$1' '$window'" &
+  "${self%/*}/claude-issue" open "$1" "$(tmux display -p -t "$TMUX_PANE" '#{window_id}')" </dev/null >/dev/null 2>&1 &
 }
 # Fetch an issue for the popup in the background, at the text width the popup will have
 # (85% of the window, minus borders and margin), so opening it is instant
@@ -192,7 +191,7 @@ issue_prefetch() { # $1 url
   [ -n "$1" ] || return
   local ww
   ww=$(tmux display -p -t "$TMUX_PANE" '#{window_width}')
-  "${self%/*}/claude-issue" prefetch "$1" $((ww * 85 / 100 - 4)) >/dev/null 2>&1 &
+  "${self%/*}/claude-issue" prefetch "$1" $((ww * 85 / 100 - 4)) </dev/null >/dev/null 2>&1 &
 }
 issue_prefetch_selected() { issue_prefetch "$(sed -n "$((issue_sel + 1))p" "$ISSUES_CACHE" | cut -f5)"; }
 
@@ -263,13 +262,16 @@ render() {
   host=$(hostname)
   continuum=~/.tmux/plugins/tmux-continuum/scripts/continuum_save.sh
   # Hide the cursor; ask for SGR mouse reports of clicks and of movement (for hover prefetch)
-  trap 'printf "%s" "$ESC[?1003l$ESC[?1000l$ESC[?1006l$ESC[?25h"' EXIT
+  trap 'printf "%s" "$ESC[?1003l$ESC[?1000l$ESC[?1006l$ESC[?25h"; stty echo 2>/dev/null' EXIT
+  # Echo off for good, not just while read waits: mouse movement arriving while the sidebar
+  # is busy (e.g. starting a prefetch) was otherwise echoed as ^[[<35;… after the footer
+  stty -echo 2>/dev/null
   # (no screen clear: every frame overwrites each line and clears below, and a clear here
   # flashed all sidebars whenever they restarted, e.g. on a script change)
   printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1003h$ESC[?1006h"
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
   local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls
-  local issue_offset=0 issue_total=0 issue_mode=0 issue_sel=0 last_hover=
+  local issue_offset=0 issue_total=0 issue_mode=0 issue_sel=0 last_hover= followed_issue=
 
   local version
   version=$(stat -c %Y "$self")
@@ -383,7 +385,7 @@ render() {
     # The status bar normally drives tmux-continuum's autosave; with it hidden, the
     # visible sidebar does (continuum itself still only saves every @continuum-save-interval)
     if [ "$visible" = 1 ] && [ $((SECONDS - last_continuum)) -ge 60 ] && [ -x "$continuum" ]; then
-      "$continuum" >/dev/null 2>&1 &
+      "$continuum" </dev/null >/dev/null 2>&1 &
       last_continuum=$SECONDS
     fi
     if [ "$visible" = 1 ]; then
@@ -445,6 +447,22 @@ render() {
               issue_prefetch_selected
               ;;
             t) [ "$issue_mode" = 1 ] && issue_ttl_cycle ;;
+            r) # redraw request; the issue popup also uses it to say which issue it shows
+              local shown at
+              shown=$(tmux show -gv @claude_issue_selected 2>/dev/null)
+              if [ -n "$shown" ] && [ "$shown" != "$followed_issue" ]; then
+                followed_issue=$shown
+                at=$(awk -F'\t' -v u="$shown" '$5 == u { print NR - 1; exit }' "$ISSUES_CACHE")
+                if [ -n "$at" ]; then
+                  issue_sel=$at
+                  # Keep it in view (issue_move 0 scrolls to the selection without moving it)
+                  local was=$issue_mode
+                  issue_mode=1
+                  issue_move 0 >/dev/null
+                  issue_mode=$was
+                fi
+              fi
+              ;;
             j) [ "$issue_mode" = 1 ] && issue_move 1 ;;
             k) [ "$issue_mode" = 1 ] && issue_move -1 ;;
             g) [ "$issue_mode" = 1 ] && issue_move -"$issue_total" ;;

@@ -1,0 +1,97 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pillow>=10", "numpy>=1.26"]
+# ///
+"""Draw an image in the terminal, for the tmux issue popup and image viewer.
+
+  claude-issue-image <file> <max-columns> <max-rows>
+      Truecolor half blocks: each text cell shows two pixels stacked ("▀": top pixel as
+      foreground, bottom as background). Works anywhere 24-bit colour does, tmux popups
+      included, but at two pixels per cell small text is not readable.
+
+  claude-issue-image --sixel <file> <max-width-px> <max-height-px>
+      Sixel graphics at real resolution, for a tmux pane (tmux does not show sixel in popups).
+
+Images are never enlarged; transparent areas are drawn over the dark popup background.
+"""
+import math
+import re
+import sys
+
+import numpy as np
+from PIL import Image
+
+BACKGROUND = (30, 30, 30)
+
+
+def load(path: str) -> Image.Image:
+    image = Image.open(path)
+    image.seek(0)  # first frame of an animation
+    image = image.convert("RGBA")
+    flat = Image.new("RGBA", image.size, BACKGROUND + (255,))
+    flat.alpha_composite(image)
+    return flat.convert("RGB")
+
+
+def half_blocks(image: Image.Image, max_cols: int, max_rows: int) -> str:
+    # One column per pixel horizontally and two pixels per row vertically keeps the shape
+    scale = min(1.0, max_cols / image.width, (max_rows * 2) / image.height)
+    cols = max(1, round(image.width * scale))
+    rows = max(1, math.ceil(image.height * scale / 2))
+    pixels = image.resize((cols, rows * 2), Image.LANCZOS).load()
+    out = []
+    for row in range(rows):
+        line = []
+        for col in range(cols):
+            (tr, tg, tb), (br, bg, bb) = pixels[col, row * 2], pixels[col, row * 2 + 1]
+            line.append(f"\x1b[38;2;{tr};{tg};{tb};48;2;{br};{bg};{bb}m▀")
+        out.append("".join(line) + "\x1b[0m")
+    return "\n".join(out) + "\n"
+
+
+def run_length(chars: str) -> str:
+    return re.sub(r"(.)\1{3,}", lambda m: f"!{len(m.group(0))}{m.group(1)}", chars)
+
+
+def sixel(image: Image.Image, max_w: int, max_h: int) -> str:
+    scale = min(1.0, max_w / image.width, max_h / image.height)
+    if scale < 1.0:
+        image = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.LANCZOS)
+    # 255 colours keeps screenshots crisp; sixel draws 6-pixel-high bands, one pass per colour
+    indexed = image.quantize(colors=255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    palette = np.array(indexed.getpalette()[: 255 * 3]).reshape(-1, 3)
+    idx = np.array(indexed, dtype=np.int16)
+    height, width = idx.shape
+    pad = (-height) % 6
+    if pad:
+        idx = np.vstack([idx, np.full((pad, width), -1, dtype=np.int16)])  # -1: no pixel
+    weights = (1 << np.arange(6, dtype=np.uint8))[:, None]
+
+    out = [f'\x1bP0;1q"1;1;{width};{height}']
+    out += [f"#{i};2;{r * 100 // 255};{g * 100 // 255};{b * 100 // 255}" for i, (r, g, b) in enumerate(palette)]
+    for top in range(0, idx.shape[0], 6):
+        band = idx[top : top + 6]
+        passes = []
+        for colour in np.unique(band):
+            if colour < 0:
+                continue
+            bits = ((band == colour) * weights).sum(axis=0).astype(np.uint8)
+            chars = (bits + 63).tobytes().decode("ascii").rstrip("?")
+            passes.append(f"#{colour}{run_length(chars)}")
+        out.append("$".join(passes) + "-")
+    return "".join(out) + "\x1b\\"
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if args and args[0] == "--sixel":
+        path, max_w, max_h = args[1], int(args[2]), int(args[3])
+        sys.stdout.write(sixel(load(path), max_w, max_h))
+    else:
+        path, max_cols, max_rows = args[0], int(args[1]), int(args[2])
+        sys.stdout.write(half_blocks(load(path), max_cols, max_rows))
+
+
+if __name__ == "__main__":
+    main()
