@@ -83,7 +83,9 @@ todo_lines() {
   local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
   todo_lines=() todo_refs=()
   local hint="a add · e edit"
-  todo_lines+=("$(printf '%s Todo%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 6)) "$hint" "$RESET")") todo_refs+=(edit)
+  local head
+  printf -v head '%s Todo%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 6)) "$hint" "$RESET"
+  todo_lines+=("$head") todo_refs+=(edit)
 
   local n=0 total=0 lineno text max=$((width - 5))
   if [ -f "$TODO_FILE" ]; then
@@ -133,7 +135,7 @@ load_issue_rows() {
   [ "$last" -ge 0 ] || last=0
   [ "$issue_offset" -le "$last" ] || issue_offset=$last
 }
-issue_url_at() { local f; IFS=$'\t' read -r f f f f f <<<"${issue_rows[$1]:-}"; echo "$f"; } # <index>
+issue_url_at() { local f; IFS=$'\t' read -r f f f f issue_url <<<"${issue_rows[$1]:-}"; } # <index> → issue_url
 issue_index_of() { # <url>: its index in issue_rows, or nothing
   local i
   for i in "${!issue_rows[@]}"; do [[ ${issue_rows[i]} == *$'\t'"$1" ]] && { echo "$i"; return; }; done
@@ -151,7 +153,9 @@ issue_lines() {
   [ "$issue_total" -gt "$ISSUES_ROWS" ] && range="$((offset + 1))–$((offset + ISSUES_ROWS > issue_total ? issue_total : offset + ISSUES_ROWS)) of $issue_total ↕"
   [ "$issue_total" -gt 0 ] && [ -z "$range" ] && range="$issue_total open"
   [ -n "$issue_filter" ] && [ "$issue_total" -le "$ISSUES_ROWS" ] && range="$issue_total match"
-  issue_lines+=("$(printf '%s Issues%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 8)) "$range" "$RESET")") issue_urls+=("")
+  local head
+  printf -v head '%s Issues%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 8)) "$range" "$RESET"
+  issue_lines+=("$head") issue_urls+=("")
   if [ "$filter_typing" = 1 ] || [ -n "$issue_filter" ]; then
     local cursor=
     [ "$filter_typing" = 1 ] && cursor="${KEYC}▏${RESET}"
@@ -174,7 +178,9 @@ issue_lines() {
     [ "$mine" = 1 ] && dot="${MINE}●${RESET}"
     issue_lines+=("  $dot ${DIM}${ref}${RESET} $title") issue_urls+=("$url")
   done
-  issue_lines+=("${DIM}  cache $(issue_ttl)m · click to change${RESET}") issue_urls+=(ttl)
+  local issue_ttl_minutes
+  issue_ttl
+  issue_lines+=("${DIM}  cache ${issue_ttl_minutes}m · click to change${RESET}") issue_urls+=(ttl)
 }
 
 # Refresh the issues cache in the background every 5 minutes, or now with "force"
@@ -200,7 +206,8 @@ issue_scroll() { # $1 rows; keeps a selected issue inside the visible window
   if [ "$nav" = 1 ] && [[ $nav_target == issue:* ]]; then
     [ "$issue_sel" -ge "$issue_offset" ] || issue_sel=$issue_offset
     [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_sel=$((issue_offset + ISSUES_ROWS - 1))
-    nav_target="issue:$(issue_url_at "$issue_sel")"
+    issue_url_at "$issue_sel"
+    nav_target="issue:$issue_url"
   fi
 }
 issue_move() { # $1 issues; scrolls to keep the selection visible, prefetches the selection
@@ -215,7 +222,8 @@ issue_move() { # $1 issues; scrolls to keep the selection visible, prefetches th
 nav_select_issue() { # <index>: select that issue (scrolled into view, prefetched)
   issue_sel=$1
   issue_move 0
-  nav_target="issue:$(issue_url_at "$issue_sel")"
+  issue_url_at "$issue_sel"
+  nav_target="issue:$issue_url"
 }
 nav_move() { # <1|-1>: the next/previous row you can act on
   local d=$1 i at=-1
@@ -270,24 +278,22 @@ issue_open() { # $1 url: the issue view popup (claude-issue), over the window th
 # (85% of the window, minus borders and margin), so opening it is instant
 issue_prefetch() { # $1 url
   [ -n "$1" ] || return
-  local ww
-  ww=$(tmux display -p -t "$TMUX_PANE" '#{window_width}')
-  "${self%/*}/claude-issue" prefetch "$1" $((ww * 85 / 100 - 4)) </dev/null >/dev/null 2>&1 &
+  "${self%/*}/claude-issue" prefetch "$1" $((window_width * 85 / 100 - 4)) </dev/null >/dev/null 2>&1 &
 }
-issue_prefetch_selected() { issue_prefetch "$(issue_url_at "$issue_sel")"; }
+issue_prefetch_selected() { issue_url_at "$issue_sel"; issue_prefetch "$issue_url"; }
 
 # How long fetched issues are cached (minutes, used by claude-issue); click or "t" cycles it
 ISSUE_TTL_FILE=~/.config/claude-sidebar/issue-ttl
 ISSUE_TTL_STEPS=(5 15 30 60)
-issue_ttl() {
-  local m
-  m=$(cat "$ISSUE_TTL_FILE" 2>/dev/null)
-  [[ $m =~ ^[0-9]+$ ]] || m=15
-  echo "$m"
+issue_ttl() { # into issue_ttl_minutes (no subshell: this runs on every redraw)
+  issue_ttl_minutes=15
+  [ -f "$ISSUE_TTL_FILE" ] && read -r issue_ttl_minutes <"$ISSUE_TTL_FILE"
+  [[ $issue_ttl_minutes =~ ^[0-9]+$ ]] || issue_ttl_minutes=15
 }
 issue_ttl_cycle() {
-  local now next=${ISSUE_TTL_STEPS[0]} i
-  now=$(issue_ttl)
+  local now next=${ISSUE_TTL_STEPS[0]} i issue_ttl_minutes
+  issue_ttl
+  now=$issue_ttl_minutes
   for i in "${!ISSUE_TTL_STEPS[@]}"; do
     [ "${ISSUE_TTL_STEPS[i]}" -gt "$now" ] && { next=${ISSUE_TTL_STEPS[i]}; break; }
   done
@@ -306,24 +312,29 @@ usage_lines() { # <width> <window-id>
   usage_lines=()
   [ -d "$USAGE_DIR" ] || return
 
-  # Only panes that still exist; the newest report holds the freshest rate limits
-  local live latest= ctx_file= f pane
-  live=$(tmux list-panes -a -F '#{pane_id}' | tr -d '%')
-  for f in $(ls -t "$USAGE_DIR"/*.tsv 2>/dev/null); do
-    pane=$(basename "$f" .tsv)
-    grep -qx "$pane" <<<"$live" || continue
-    [ -n "$latest" ] || latest=$f
+  # Only panes that still exist; the newest report holds the freshest rate limits.
+  # (Built-ins only: this used to run ls, basename, grep and tr for every report.)
+  local -A live=()
+  local f pane latest= ctx_file= active=
+  while read -r pane f; do
+    live[${pane#%}]=1
+    [ "$f" = 1 ] && active=${pane#%}
+  done < <(tmux list-panes -a -F '#{pane_id} #{?#{==:#{window_id},'"$window"'},#{pane_active},0}')
+  for f in "$USAGE_DIR"/*.tsv; do
+    [ -f "$f" ] || continue
+    pane=${f##*/}
+    pane=${pane%.tsv}
+    [ -n "${live[$pane]:-}" ] || continue
+    [ -z "$latest" ] || [ "$f" -nt "$latest" ] && latest=$f
   done
   [ -n "$latest" ] || return
   # Context: the active pane of this window if it is a Claude session, else another Claude
   # pane in this window, else the latest session anywhere
-  local active
-  active=$(tmux display -p -t "$window" '#{pane_id}' | tr -d '%')
-  if [ -f "$USAGE_DIR/$active.tsv" ]; then ctx_file=$USAGE_DIR/$active.tsv
+  if [ -n "$active" ] && [ -f "$USAGE_DIR/$active.tsv" ]; then ctx_file=$USAGE_DIR/$active.tsv
   else
-    for pane in $(tmux list-panes -t "$window" -F '#{pane_id}' | tr -d '%'); do
-      [ -f "$USAGE_DIR/$pane.tsv" ] && { ctx_file=$USAGE_DIR/$pane.tsv; break; }
-    done
+    while read -r pane; do
+      [ -f "$USAGE_DIR/${pane#%}.tsv" ] && { ctx_file=$USAGE_DIR/${pane#%}.tsv; break; }
+    done < <(tmux list-panes -t "$window" -F '#{pane_id}')
     [ -n "$ctx_file" ] || ctx_file=$latest
   fi
 
@@ -334,7 +345,9 @@ usage_lines() { # <width> <window-id>
 
   local now
   printf -v now '%(%s)T' -1
-  usage_lines+=("${BOLD} Claude usage${RESET}${DIM}$(printf '%*s' $((width - 14)) "${c[model]:-}")${RESET}")
+  local model
+  printf -v model '%*s' $((width - 14)) "${c[model]:-}"
+  usage_lines+=("${BOLD} Claude usage${RESET}${DIM}${model}${RESET}")
   usage_bar "5h" "${u[five_hour_pct]:-}" "${u[five_hour_resets]:-}" "$now" "$width"
   usage_bar "week" "${u[seven_day_pct]:-}" "${u[seven_day_resets]:-}" "$now" "$width"
   usage_bar "ctx" "${c[ctx_pct]:-}" "" "$now" "$width"
@@ -354,7 +367,8 @@ usage_bar() { # <label> <percent> <resets-at epoch or ""> <now> <width>
     fi
   fi
   if [ -z "$pct" ]; then
-    usage_lines+=("  $(printf '%-5s' "$label")${DIM}no data${RESET}")
+    printf -v label '%-5s' "$label"
+    usage_lines+=("  ${label}${DIM}no data${RESET}")
     return
   fi
   pct=${pct%%.*}
@@ -366,7 +380,11 @@ usage_bar() { # <label> <percent> <resets-at epoch or ""> <now> <width>
   local full empty
   printf -v full '%*s' "$filled" ''
   printf -v empty '%*s' $((bar_w - filled)) ''
-  usage_lines+=("  $(printf '%-5s' "$label")${colour}${full// /█}${DIM}${empty// /░}${RESET} $(printf '%4s' "$pct%") ${DIM}$(printf '%-6s' "$when")${RESET}")
+  local shown_pct
+  printf -v label '%-5s' "$label"
+  printf -v shown_pct '%4s' "$pct%"
+  printf -v when '%-6s' "$when"
+  usage_lines+=("  ${label}${colour}${full// /█}${DIM}${empty// /░}${RESET} ${shown_pct} ${DIM}${when}${RESET}")
 }
 
 # Open a Teams join link in Windows (the browser hands it on to Teams)
@@ -427,16 +445,19 @@ render() {
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
   local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls usage_lines issue_rows nav_order
   local issue_offset=0 issue_total=0 issue_sel=0 issue_filter= filter_typing=0 last_hover= followed_issue=
-  local nav=0 nav_target=
+  local nav=0 nav_target= issue_url= window_width=0 window_id= usage_at=-99 checked_at=-99
   # Only follow issues the popup moves to from now on, not one it showed before we started
   followed_issue=$(tmux show -gv @claude_issue_selected 2>/dev/null)
 
   local version
   version=$(stat -c %Y "$self")
   while true; do
-    # The script was edited: restart on the new code (keeps the pane and its options)
-    [ "$(stat -c %Y "$self")" = "$version" ] || exec "$self" render
-    read -r width height panes visible focused < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active}')
+    # Every 2s at most (not on every key press): the script was edited → restart on the new
+    # code (keeps the pane and its options)
+    if [ $((SECONDS - checked_at)) -ge 2 ]; then
+      [ "$(stat -c %Y "$self")" = "$version" ] || exec "$self" render
+    fi
+    read -r width height panes visible focused window_width window_id < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active} #{window_width} #{window_id}')
     # Keyboard mode (and typing a filter) ends when you click or move away from the sidebar
     [ "$focused" = 1 ] || { nav=0; filter_typing=0; }
     load_issue_rows
@@ -465,7 +486,9 @@ render() {
           fi
           local name=" ${widx} ${wname}" room=$((width - 7))
           [ ${#name} -gt "$room" ] && name="${name:0:room-1}…"
-          out+=$(printf '%s%s%-*s%s %s' "$colour" "$BOLD" "$room" "$name" "$RESET$DIM" "$when")"${RESET}${ESC}[K"$'\n'
+          local line
+          printf -v line '%s%s%-*s%s %s' "$colour" "$BOLD" "$room" "$name" "$RESET$DIM" "$when"
+          out+="$line${RESET}${ESC}[K"$'\n'
           click[$row]=$wid
           row=$((row + 1))
           last_win=$widx
@@ -487,7 +510,9 @@ render() {
         [ "$wactive$pactive" = 11 ] && marker='▸'
         local max=$((width - 7))
         [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
-        out+=$(printf '  %s %-*s %s' "$marker" "$max" "$title" "$dot")"${RESET}${ESC}[K"$'\n'
+        local line
+        printf -v line '  %s %-*s %s' "$marker" "$max" "$title" "$dot"
+        out+="$line${RESET}${ESC}[K"$'\n'
         click[$row]=$pid
         row=$((row + 1))
       done < <(tmux list-panes -s -t "$TMUX_PANE" -F "$FMT")
@@ -530,9 +555,11 @@ render() {
         done
       fi
 
-      local window_id
-      window_id=$(tmux display -p -t "$TMUX_PANE" '#{window_id}')
-      usage_lines "$width" "$window_id"
+      # Usage changes slowly: rebuilt every 2s, reused for redraws in between (key presses)
+      if [ $((SECONDS - usage_at)) -ge 2 ]; then
+        usage_lines "$width" "$window_id"
+        usage_at=$SECONDS
+      fi
       if [ ${#usage_lines[@]} -gt 0 ]; then
         b_text+=("" "$rule" "") b_click+=("" "" "")
         for i in "${!usage_lines[@]}"; do b_text+=("${usage_lines[i]}") b_click+=(""); done
@@ -558,8 +585,8 @@ render() {
       # across the selected row, kept through the row's own colour resets
       local r sel_row=
       nav_order=()
-      for r in $(printf '%s\n' "${!click[@]}" | sort -n); do
-        [ "${click[$r]}" = filter ] && continue
+      for ((r = 1; r <= height; r++)); do
+        [ -n "${click[$r]:-}" ] && [ "${click[$r]}" != filter ] || continue
         nav_order+=("${click[$r]}")
         [ "$nav" = 1 ] && [ "${click[$r]}" = "$nav_target" ] && sel_row=$r
       done
@@ -570,7 +597,8 @@ render() {
         line="${line%"${ESC}[K"}"
         [ "${line:0:1}" = " " ] && line="${ESC}[38;5;215m▸${RESET}${line:1}"
         frame[sel_row - 1]="${SELBG}${line//$RESET/$RESET$SELBG}${ESC}[K${RESET}"
-        out=$(printf '%s\n' "${frame[@]}")
+        printf -v out '%s\n' "${frame[@]}"
+        out=${out%$'\n'}
       fi
       # Synchronized output (mode 2026): tmux shows the frame only once it is complete
       printf '%s' "$ESC[?2026h$ESC[H$out$ESC[J$ESC[?2026l"
@@ -582,10 +610,12 @@ render() {
       "$continuum" </dev/null >/dev/null 2>&1 &
       last_continuum=$SECONDS
     fi
-    if [ "$visible" = 1 ]; then
+    # Whether the calendar or issues are due a refetch: checked every 2s, not on every key
+    if [ "$visible" = 1 ] && [ $((SECONDS - checked_at)) -ge 2 ]; then
       calendar_fetch
       issues_fetch
     fi
+    [ $((SECONDS - checked_at)) -ge 2 ] && checked_at=$SECONDS
 
     # Wait up to 2s; `refresh` wakes us early by typing "r" into this pane. Everything that
     # arrived is then handled token by token: mouse reports, arrow keys, Esc, single keys.
