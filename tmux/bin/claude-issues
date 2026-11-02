@@ -7,8 +7,10 @@ set -euo pipefail
 USER_LOGIN=torgermalling
 CACHE=${CLAUDE_SIDEBAR_CACHE:-~/.cache/claude-sidebar}/issues.tsv
 
-GH_TOKEN=$(gh auth token --user "$USER_LOGIN")
-export GH_TOKEN
+# The torgermalling token, asked of gh once per process tree: whoever starts us (the
+# sidebar, a popup) passes it on in CLAUDE_SIDEBAR_GH_TOKEN, only in memory
+GH_TOKEN=${CLAUDE_SIDEBAR_GH_TOKEN:-$(gh auth token --user "$USER_LOGIN")}
+export GH_TOKEN CLAUDE_SIDEBAR_GH_TOKEN=$GH_TOKEN
 fields=repository,number,title,url,updatedAt
 jq_rows='.[] | [.updatedAt, .repository.name, (.number | tostring), $a, (.title | gsub("[\t\n]"; " ")), .url] | @tsv'
 

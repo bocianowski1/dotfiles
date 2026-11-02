@@ -29,8 +29,11 @@ PROMPTS=$CACHE_DIR/prompts
 VIEW_CACHE=$CACHE_DIR/issue-view
 TTL_FILE=~/.config/claude-sidebar/issue-ttl
 
-GH_TOKEN=$(gh auth token --user "$USER_LOGIN")
-export GH_TOKEN GH_PAGER=cat
+# The torgermalling token, asked of gh once per process tree: whoever starts us (the
+# sidebar, a popup) passes it on in CLAUDE_SIDEBAR_GH_TOKEN, only in memory
+GH_TOKEN=${CLAUDE_SIDEBAR_GH_TOKEN:-$(gh auth token --user "$USER_LOGIN")}
+export GH_TOKEN CLAUDE_SIDEBAR_GH_TOKEN=$GH_TOKEN
+export GH_PAGER=cat
 
 # Local clone of owner/repo under CODE_DIR: real clones only (a worktree's .git is a file),
 # matched on the origin remote, preferring the folder named after the repo

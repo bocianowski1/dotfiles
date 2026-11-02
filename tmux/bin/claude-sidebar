@@ -336,6 +336,11 @@ render() {
   local ESC=$'\e'
   local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
   local ACTIVE="$ESC[38;5;215m" WINDOW="$ESC[38;5;110m"
+  # Ask gh for the torgermalling token once; the issue jobs this sidebar starts reuse it
+  if command -v gh >/dev/null && [ -z "${CLAUDE_SIDEBAR_GH_TOKEN:-}" ]; then
+    CLAUDE_SIDEBAR_GH_TOKEN=$(gh auth token --user torgermalling 2>/dev/null)
+    export CLAUDE_SIDEBAR_GH_TOKEN
+  fi
   local host continuum last_continuum=0
   host=$(hostname)
   continuum=~/.tmux/plugins/tmux-continuum/scripts/continuum_save.sh
@@ -362,113 +367,117 @@ render() {
     # Only the sidebar is left in this window: close the window
     if [ "$panes" = 1 ]; then tmux kill-window -t "$TMUX_PANE"; exit 0; fi
 
-    local out="${BOLD} Claude Code${RESET}${ESC}[K"$'\n'"${ESC}[K"$'\n'
-    local last_win= row=3
-    click=()
-    local today
-    printf -v today '%(%F)T' -1
-    while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened; do
-      if [ "$widx" != "$last_win" ]; then
-        [ -n "$last_win" ] && out+="${ESC}[K"$'\n' && row=$((row + 1))
-        local colour=$WINDOW
-        [ "$wactive" = 1 ] && colour=$ACTIVE
+    # Only the sidebar you can see draws; hidden ones wait (up to a minute) and are woken by
+    # the window-switch hook the moment their window comes into view
+    if [ "$visible" = 1 ]; then
+      local out="${BOLD} Claude Code${RESET}${ESC}[K"$'\n'"${ESC}[K"$'\n'
+      local last_win= row=3
+      click=()
+      local today
+      printf -v today '%(%F)T' -1
+      while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened; do
+        if [ "$widx" != "$last_win" ]; then
+          [ -n "$last_win" ] && out+="${ESC}[K"$'\n' && row=$((row + 1))
+          local colour=$WINDOW
+          [ "$wactive" = 1 ] && colour=$ACTIVE
 
-        # When you last switched to this window: "10:15" today, "31.10" on earlier days
-        local when= day
-        if [ -n "$opened" ]; then
-          printf -v day '%(%F)T' "$opened"
-          if [ "$day" = "$today" ]; then printf -v when '%(%H:%M)T' "$opened"; else printf -v when '%(%d.%m)T' "$opened"; fi
+          # When you last switched to this window: "10:15" today, "31.10" on earlier days
+          local when= day
+          if [ -n "$opened" ]; then
+            printf -v day '%(%F)T' "$opened"
+            if [ "$day" = "$today" ]; then printf -v when '%(%H:%M)T' "$opened"; else printf -v when '%(%d.%m)T' "$opened"; fi
+          fi
+          local name=" ${widx} ${wname}" room=$((width - 7))
+          [ ${#name} -gt "$room" ] && name="${name:0:room-1}…"
+          out+=$(printf '%s%s%-*s%s %s' "$colour" "$BOLD" "$room" "$name" "$RESET$DIM" "$when")"${RESET}${ESC}[K"$'\n'
+          click[$row]=$wid
+          row=$((row + 1))
+          last_win=$widx
         fi
-        local name=" ${widx} ${wname}" room=$((width - 7))
-        [ ${#name} -gt "$room" ] && name="${name:0:room-1}…"
-        out+=$(printf '%s%s%-*s%s %s' "$colour" "$BOLD" "$room" "$name" "$RESET$DIM" "$when")"${RESET}${ESC}[K"$'\n'
-        click[$row]=$wid
+        [ "$sidebar" != 1 ] || continue
+        [ -n "$state" ] || [ "$cmd" = claude ] || continue
+
+        # Claude's pane title is "<spinner> <task summary>"; fall back to the directory name
+        title=${title#"${title%%[[:alnum:]]*}"}
+        case $title in "" | */* | "$host") title=${path##*/} ;; esac
+        local dot
+        case $state in
+          attention) dot="$ESC[1;38;5;214m●" ;;
+          running) dot="$ESC[38;5;114m●" ;;
+          idle) dot="$ESC[38;5;245m●" ;;
+          *) dot="$ESC[38;5;240m○" ;; # Claude is running, but its hooks have not reported yet
+        esac
+        local marker=' '
+        [ "$wactive$pactive" = 11 ] && marker='▸'
+        local max=$((width - 7))
+        [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
+        out+=$(printf '  %s %-*s %s' "$marker" "$max" "$title" "$dot")"${RESET}${ESC}[K"$'\n'
+        click[$row]=$pid
         row=$((row + 1))
-        last_win=$widx
-      fi
-      [ "$sidebar" != 1 ] || continue
-      [ -n "$state" ] || [ "$cmd" = claude ] || continue
+      done < <(tmux list-panes -s -t "$TMUX_PANE" -F "$FMT")
 
-      # Claude's pane title is "<spinner> <task summary>"; fall back to the directory name
-      title=${title#"${title%%[[:alnum:]]*}"}
-      case $title in "" | */* | "$host") title=${path##*/} ;; esac
-      local dot
-      case $state in
-        attention) dot="$ESC[1;38;5;214m●" ;;
-        running) dot="$ESC[38;5;114m●" ;;
-        idle) dot="$ESC[38;5;245m●" ;;
-        *) dot="$ESC[38;5;240m○" ;; # Claude is running, but its hooks have not reported yet
-      esac
-      local marker=' '
-      [ "$wactive$pactive" = 11 ] && marker='▸'
-      local max=$((width - 7))
-      [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
-      out+=$(printf '  %s %-*s %s' "$marker" "$max" "$title" "$dot")"${RESET}${ESC}[K"$'\n'
-      click[$row]=$pid
-      row=$((row + 1))
-    done < <(tmux list-panes -s -t "$TMUX_PANE" -F "$FMT")
-
-    # Bottom block, pinned above the footer: todo, calendar and issues, separated by lines.
-    # Built as (text, click target) pairs first so the padding above it can be measured.
-    local now i rule
-    printf -v now '%(%s)T' -1
-    printf -v rule '%*s' $((width - 2)) ''
-    rule=" ${DIM}${rule// /─}${RESET}"
-    local -a b_text=() b_click=()
-    todo_lines "$width"
-    for i in "${!todo_lines[@]}"; do
-      b_text+=("${todo_lines[i]}")
-      case ${todo_refs[i]} in
-        edit) b_click+=(todo-edit) ;;
-        [0-9]*) b_click+=("todo:${todo_refs[i]}") ;;
-        *) b_click+=("") ;;
-      esac
-    done
-    calendar_lines "$width" "$now"
-    if [ ${#cal_lines[@]} -gt 0 ]; then
-      b_text+=("" "$rule" "") b_click+=("" "" "")
-      for i in "${!cal_lines[@]}"; do
-        # No click action on meetings: explorer.exe opened the Documents folder for Teams
-        # links, and new Outlook has no documented link straight to its calendar
-        b_text+=("${cal_lines[i]}") b_click+=("")
-      done
-    fi
-    if [ "$issue_mode" = 1 ]; then issue_lines "$width" "$issue_offset" "$issue_sel"; else issue_lines "$width" "$issue_offset"; fi
-    if [ ${#issue_lines[@]} -gt 0 ]; then
-      b_text+=("" "$rule" "") b_click+=("" "" "")
-      for i in "${!issue_lines[@]}"; do
-        b_text+=("${issue_lines[i]}")
-        case ${issue_urls[i]} in
-          ttl) b_click+=(ttl) ;;
-          '') b_click+=("") ;;
-          *) b_click+=("issue:${issue_urls[i]}") ;;
+      # Bottom block, pinned above the footer: todo, calendar and issues, separated by lines.
+      # Built as (text, click target) pairs first so the padding above it can be measured.
+      local now i rule
+      printf -v now '%(%s)T' -1
+      printf -v rule '%*s' $((width - 2)) ''
+      rule=" ${DIM}${rule// /─}${RESET}"
+      local -a b_text=() b_click=()
+      todo_lines "$width"
+      for i in "${!todo_lines[@]}"; do
+        b_text+=("${todo_lines[i]}")
+        case ${todo_refs[i]} in
+          edit) b_click+=(todo-edit) ;;
+          [0-9]*) b_click+=("todo:${todo_refs[i]}") ;;
+          *) b_click+=("") ;;
         esac
       done
+      calendar_lines "$width" "$now"
+      if [ ${#cal_lines[@]} -gt 0 ]; then
+        b_text+=("" "$rule" "") b_click+=("" "" "")
+        for i in "${!cal_lines[@]}"; do
+          # No click action on meetings: explorer.exe opened the Documents folder for Teams
+          # links, and new Outlook has no documented link straight to its calendar
+          b_text+=("${cal_lines[i]}") b_click+=("")
+        done
+      fi
+      if [ "$issue_mode" = 1 ]; then issue_lines "$width" "$issue_offset" "$issue_sel"; else issue_lines "$width" "$issue_offset"; fi
+      if [ ${#issue_lines[@]} -gt 0 ]; then
+        b_text+=("" "$rule" "") b_click+=("" "" "")
+        for i in "${!issue_lines[@]}"; do
+          b_text+=("${issue_lines[i]}")
+          case ${issue_urls[i]} in
+            ttl) b_click+=(ttl) ;;
+            '') b_click+=("") ;;
+            *) b_click+=("issue:${issue_urls[i]}") ;;
+          esac
+        done
+      fi
+
+      local window_id
+      window_id=$(tmux display -p -t "$TMUX_PANE" '#{window_id}')
+      usage_lines "$width" "$window_id"
+      if [ ${#usage_lines[@]} -gt 0 ]; then
+        b_text+=("" "$rule" "") b_click+=("" "" "")
+        for i in "${!usage_lines[@]}"; do b_text+=("${usage_lines[i]}") b_click+=(""); done
+      fi
+
+      local pad=$((height - (row - 1) - ${#b_text[@]} - 2))
+      [ "$pad" -ge 1 ] || pad=1
+      for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
+      row=$((row + pad))
+      for i in "${!b_text[@]}"; do
+        out+="${b_text[i]}${ESC}[K"$'\n'
+        [ -n "${b_click[i]}" ] && click[$row]=${b_click[i]}
+        row=$((row + 1))
+      done
+
+      local footer="q close · R refresh"
+      [ "$issue_mode" = 1 ] && footer="⏎ open · n new · t cache · esc"
+      out+="${ESC}[K"$'\n'"${DIM}  ${footer}${RESET}${ESC}[K"
+      # Synchronized output (mode 2026): tmux shows the frame only once it is complete
+      printf '%s' "$ESC[?2026h$ESC[H$out$ESC[J$ESC[?2026l"
     fi
-
-    local window_id
-    window_id=$(tmux display -p -t "$TMUX_PANE" '#{window_id}')
-    usage_lines "$width" "$window_id"
-    if [ ${#usage_lines[@]} -gt 0 ]; then
-      b_text+=("" "$rule" "") b_click+=("" "" "")
-      for i in "${!usage_lines[@]}"; do b_text+=("${usage_lines[i]}") b_click+=(""); done
-    fi
-
-    local pad=$((height - (row - 1) - ${#b_text[@]} - 2))
-    [ "$pad" -ge 1 ] || pad=1
-    for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
-    row=$((row + pad))
-    for i in "${!b_text[@]}"; do
-      out+="${b_text[i]}${ESC}[K"$'\n'
-      [ -n "${b_click[i]}" ] && click[$row]=${b_click[i]}
-      row=$((row + 1))
-    done
-
-    local footer="q close · R refresh"
-    [ "$issue_mode" = 1 ] && footer="⏎ open · n new · t cache · esc"
-    out+="${ESC}[K"$'\n'"${DIM}  ${footer}${RESET}${ESC}[K"
-    # Synchronized output (mode 2026): tmux shows the frame only once it is complete
-    printf '%s' "$ESC[?2026h$ESC[H$out$ESC[J$ESC[?2026l"
 
     # The status bar normally drives tmux-continuum's autosave; with it hidden, the
     # visible sidebar does (continuum itself still only saves every @continuum-save-interval)
@@ -485,9 +494,10 @@ render() {
     # arrived is then handled token by token: mouse reports, arrow keys, Esc, single keys.
     # (-d '' so Enter arrives as a newline instead of ending the read)
     # Mouse movement (hover) prefetches without a redraw, so moving over the sidebar stays cheap.
-    local key k tok acted=0 waited_from=$SECONDS
-    while [ "$acted" = 0 ] && [ $((SECONDS - waited_from)) -lt 2 ] &&
-      IFS= read -rsn1 -d '' -t 2 key; do
+    local key k tok acted=0 waited_from=$SECONDS wait_for=2
+    [ "$visible" = 1 ] || wait_for=60
+    while [ "$acted" = 0 ] && [ $((SECONDS - waited_from)) -lt "$wait_for" ] &&
+      IFS= read -rsn1 -d '' -t "$wait_for" key; do
       while IFS= read -rsn1 -d '' -t 0.01 k; do key+=$k; done
       while [ -n "$key" ]; do
         if [[ $key =~ ^$'\e'\[\<([0-9]+)\;[0-9]+\;([0-9]+)([Mm]) ]]; then
