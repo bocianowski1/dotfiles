@@ -4,6 +4,8 @@
 #   claude-issue open <issue-url> <window-id>   open the popup over <window> (the sidebar uses this)
 #   claude-issue prefetch <issue-url> <width>   cache the issue for a popup of that text width
 #                                                (the sidebar runs this on hover/selection)
+#   claude-issue new <window-id>                "new issue" popup: pick a repo, write, create
+#                                                (n in the sidebar's issue list)
 #   claude-issue images <issue-url> <base> <n> <window-id>
 #                                               full-size image viewer (sixel) in its own window
 # Fetched issues are cached for the minutes in ~/.config/claude-sidebar/issue-ttl (default 15).
@@ -230,7 +232,7 @@ images() { # <url> <base> <n> <window>
   local ESC=$'\e'
   local DIM="$ESC[38;5;245m" KEY="$ESC[38;5;215m" RESET="$ESC[0m"
   total=$(cat "$base.images" 2>/dev/null || echo 0)
-  trap 'printf "%s" "$ESC[?25h"; stty echo 2>/dev/null' EXIT
+  trap 'printf "\e[?25h"; stty echo 2>/dev/null' EXIT # (literal: locals are gone by then)
   stty -echo 2>/dev/null
   printf '%s' "$ESC[?25l"
   while true; do
@@ -265,11 +267,149 @@ images() { # <url> <base> <n> <window>
   done
 }
 
+# Repos to offer for a new issue, from the orgs your issues come from, most relevant first:
+# those you already have open issues in (most issues first), then those cloned under
+# CODE_DIR, then the rest of those orgs.
+# The org listing is cached for a day in repos.txt and refreshed in the background.
+REPOS_CACHE=$CACHE_DIR/repos.txt
+refresh_repo_list() {
+  local owners
+  owners=$( { sed -E 's#https://github\.com/([^/]+)/.*#\1#' <(cut -f5 "$CACHE_DIR/issues.tsv" 2>/dev/null); } | sort -u)
+  [ -n "$owners" ] || return 0
+  local o
+  for o in $owners; do
+    gh repo list "$o" --limit 200 --json nameWithOwner,isArchived --jq '.[] | select(.isArchived | not) | .nameWithOwner'
+  done | sort -fu >"$REPOS_CACHE.tmp" && [ -s "$REPOS_CACHE.tmp" ] && mv "$REPOS_CACHE.tmp" "$REPOS_CACHE"
+  rm -f "$REPOS_CACHE.tmp"
+}
+repo_choices() {
+  {
+    cut -f5 "$CACHE_DIR/issues.tsv" 2>/dev/null | sed -E 's#https://github\.com/([^/]+/[^/]+)/.*#\1#' |
+      sort | uniq -c | sort -rn | awk '{ print $2 }'
+    find "$CODE_DIR" -maxdepth 6 -name .git -type d -prune 2>/dev/null | while IFS= read -r g; do
+      git -C "${g%/.git}" remote get-url origin 2>/dev/null
+    done | sed -nE 's#^(https://github\.com/|git@github\.com:)([^/]+/[^/]+)$#\2#p' | sed 's/\.git$//'
+    cat "$REPOS_CACHE" 2>/dev/null
+  } | awk -v owners="$(cut -f5 "$CACHE_DIR/issues.tsv" 2>/dev/null | cut -d/ -f4 | sort -u | tr '\n' ' ')" '
+    # only the orgs your issues come from (no personal or third-party clones)
+    BEGIN { n = split(tolower(owners), o, " "); for (i = 1; i <= n; i++) ok[o[i]] = 1 }
+    { split(tolower($0), part, "/") } (part[1] in ok) && !seen[tolower($0)]++'
+}
+
+# Issues created here are added to the sidebar's list at once, and claude-issues keeps them
+# for 15 minutes while GitHub's search catches up (like closed.tsv the other way round)
+remember_created() { # <url> <title>
+  local url=$1 title=$2 repo num row
+  [[ $url =~ github\.com/[^/]+/([^/]+)/issues/([0-9]+) ]] || return
+  repo=${BASH_REMATCH[1]} num=${BASH_REMATCH[2]}
+  row=$(printf '%s\t%s\t0\t%s\t%s' "$repo" "$num" "${title//$'\t'/ }" "$url")
+  printf '%s\t%s\n' "$(date +%s)" "$row" >>"$CACHE_DIR/created.tsv"
+  { printf '%s\n' "$row"; cat "$CACHE_DIR/issues.tsv" 2>/dev/null; } >"$CACHE_DIR/issues.tsv.tmp" &&
+    mv "$CACHE_DIR/issues.tsv.tmp" "$CACHE_DIR/issues.tsv"
+  chmod 600 "$CACHE_DIR/issues.tsv"
+  tmux set -g @claude_issue_selected "$url"
+  local here
+  here=$(dirname "$(readlink -f "$0")")
+  "$here/claude-sidebar" refresh >/dev/null 2>&1
+  # Refetch the list in the background (it keeps the new issue while search lags)
+  (flock -n "$CACHE_DIR/issues.lock" "$here/claude-issues" && "$here/claude-sidebar" refresh) </dev/null >/dev/null 2>&1 &
+}
+
+new_issue() { # <window>
+  local window=$1
+  local ESC=$'\e'
+  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m" KEY="$ESC[38;5;215m" WARN="$ESC[38;5;214m" SEL="$ESC[48;5;238m"
+  trap 'printf "\e[?25h"; stty echo 2>/dev/null' EXIT # (literal: locals are gone by then)
+  mkdir -p "$CACHE_DIR"
+  # A day-old (or missing) org listing is refreshed while you pick
+  if [ ! -s "$REPOS_CACHE" ] || [ $(($(date +%s) - $(stat -c %Y "$REPOS_CACHE"))) -gt 86400 ]; then
+    refresh_repo_list </dev/null >/dev/null 2>&1 &
+  fi
+
+  # 1. Repo: type to filter, ↑/↓ (or ctrl-n/p) to move, Enter to pick
+  local all=() shown=() filter= sel=0 key k repo
+  mapfile -t all < <(repo_choices)
+  stty -echo 2>/dev/null
+  printf '%s' "$ESC[?25l"
+  while true; do
+    # pick up the org listing once the background refresh lands
+    [ ${#all[@]} -gt 0 ] || mapfile -t all < <(repo_choices)
+    shown=()
+    local r
+    for r in "${all[@]}"; do [[ ${r,,} == *"${filter,,}"* ]] && shown+=("$r"); done
+    [ "$sel" -lt ${#shown[@]} ] || sel=$((${#shown[@]} - 1))
+    [ "$sel" -ge 0 ] || sel=0
+    local rows out i first
+    rows=$(($(tput lines) - 5))
+    first=$((sel >= rows ? sel - rows + 1 : 0))
+    out="$ESC[H ${BOLD}New issue${RESET} ${DIM}— pick a repo${RESET}$ESC[K"$'\n'"$ESC[K"$'\n'
+    out+=" ${KEY}›${RESET} ${filter}${DIM}▏ type to filter${RESET}$ESC[K"$'\n'"$ESC[K"$'\n'
+    for ((i = first; i < first + rows; i++)); do
+      if [ "$i" -lt ${#shown[@]} ]; then
+        if [ "$i" = "$sel" ]; then out+="${SEL} ${KEY}▸${RESET}${SEL} ${shown[i]}$ESC[K${RESET}"$'\n'
+        else out+="   ${shown[i]}$ESC[K"$'\n'; fi
+      else
+        out+="$ESC[K"$'\n'
+      fi
+    done
+    [ ${#shown[@]} -gt 0 ] || out+="$ESC[4;1H   ${DIM}no repo matches${RESET}"
+    printf '%s' "$ESC[?2026h$out$ESC[$(tput lines);1H ${KEY}↑/↓${DIM} move · ${KEY}⏎${DIM} pick · ${KEY}esc${DIM} cancel${RESET}$ESC[K$ESC[?2026l"
+
+    IFS= read -rsn1 -d '' -t 1 key || continue
+    while IFS= read -rsn1 -d '' -t 0.01 k; do key+=$k; done
+    case $key in
+      $'\e[A' | $'\eOA' | $'\x10') sel=$((sel - 1)) ;;
+      $'\e[B' | $'\eOB' | $'\x0e') sel=$((sel + 1)) ;;
+      $'\n' | $'\r') [ ${#shown[@]} -gt 0 ] && { repo=${shown[sel]}; break; } ;;
+      $'\x7f' | $'\b') if [ -n "$filter" ]; then filter=${filter%?}; sel=0; else exit 0; fi ;;
+      $'\e') exit 0 ;;
+      $'\e'*) ;; # other special keys
+      *) [[ $key == [[:print:]]* ]] && { filter+=$key; sel=0; } ;;
+    esac
+  done
+
+  # 2. Title (readline line editing), 3. description in $EDITOR, 4. confirm
+  local title= body_file= err= url=
+  body_file=$(mktemp "${TMPDIR:-/tmp}/claude-issue-body.XXXXXX.md")
+  chmod 600 "$body_file"
+  stty echo 2>/dev/null
+  printf '%s' "$ESC[?25h$ESC[2J$ESC[H ${BOLD}New issue in ${repo}${RESET}"$'\n\n'
+  while [ -z "${title// /}" ]; do
+    IFS= read -r -e -p " Title: " title || exit 0
+  done
+  "${EDITOR:-nvim}" "$body_file"
+  while true; do
+    stty -echo 2>/dev/null
+    printf '%s' "$ESC[?25l$ESC[2J$ESC[H ${BOLD}New issue in ${repo}${RESET}"$'\n\n'" ${BOLD}${title}${RESET}"$'\n\n'
+    if [ -s "$body_file" ]; then sed 's/^/ /' "$body_file" | head -n $(($(tput lines) - 8)); else printf ' %s(no description)%s\n' "$DIM" "$RESET"; fi
+    printf '%s' "$ESC[$(tput lines);1H ${KEY}y${DIM} create · ${KEY}e${DIM} edit description · ${KEY}n${DIM} cancel${RESET}"
+    IFS= read -rsn1 key || exit 0
+    case $key in
+      y)
+        printf '%s' "$ESC[$(tput lines);1H$ESC[K ${DIM}Creating…${RESET}"
+        if url=$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" 2>"$body_file.err"); then
+          url=$(grep -o 'https://github\.com/[^ ]*/issues/[0-9]*' <<<"$url" | tail -1)
+          rm -f "$body_file" "$body_file.err"
+          remember_created "$url" "$title"
+          # Show the new issue in the popup
+          view "$url" "$window"
+          exit 0
+        fi
+        err=$(head -1 "$body_file.err")
+        printf '%s' "$ESC[$(tput lines);1H$ESC[K ${WARN}Could not create: ${err}${RESET}  ${DIM}(any key)${RESET}"
+        IFS= read -rsn1 key
+        ;;
+      e) stty echo 2>/dev/null; "${EDITOR:-nvim}" "$body_file" ;;
+      n | $'\e' | q) rm -f "$body_file" "$body_file.err"; exit 0 ;;
+    esac
+  done
+}
+
 view() {
   local url=$1 window=$2
   local ESC=$'\e'
   local RESET="$ESC[0m" DIM="$ESC[38;5;245m" KEY="$ESC[38;5;215m" WARN="$ESC[38;5;214m"
-  trap 'printf "%s" "$ESC[?25h"' EXIT
+  trap 'printf "\e[?25h"' EXIT # (literal: locals are gone by then)
   printf '%s' "$ESC[?25l"
 
   local repo num width base title labels text=() lines=() shown_images= top=0
@@ -406,6 +546,7 @@ view() {
 
 case ${1:-} in
 view) view "$2" "$3" ;;
+new) new_issue "$2" ;;
 open) open_popup "$2" "$3" ;;
 images) images "$2" "$3" "$4" "$5" ;;
 prefetch)
@@ -413,7 +554,7 @@ prefetch)
   fetch_issue "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$3" skip
   ;;
 *)
-  echo "usage: claude-issue view|open <issue-url> <window-id> | prefetch <issue-url> <width> | images <issue-url> <base> <n> <window-id>" >&2
+  echo "usage: claude-issue view|open <issue-url> <window-id> | new <window-id> | prefetch <issue-url> <width> | images <issue-url> <base> <n> <window-id>" >&2
   exit 1
   ;;
 esac

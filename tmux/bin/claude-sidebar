@@ -182,6 +182,11 @@ issue_move() { # $1 issues; scrolls to keep the selection visible, prefetches th
   [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_offset=$((issue_sel - ISSUES_ROWS + 1))
   issue_prefetch_selected
 }
+issue_new() { # the "new issue" popup (claude-issue new)
+  local window
+  window=$(tmux display -p -t "$TMUX_PANE" '#{window_id}')
+  tmux display-popup -E -w 70% -h 70% -T " New issue " "'${self%/*}/claude-issue' new '$window'" </dev/null >/dev/null 2>&1 &
+}
 issue_open() { # $1 url: the issue view popup (claude-issue), over the window this sidebar is in
   "${self%/*}/claude-issue" open "$1" "$(tmux display -p -t "$TMUX_PANE" '#{window_id}')" </dev/null >/dev/null 2>&1 &
 }
@@ -379,7 +384,7 @@ render() {
     done
 
     local footer="q close · R refresh"
-    [ "$issue_mode" = 1 ] && footer="j/k move · ⏎ open · t cache · esc"
+    [ "$issue_mode" = 1 ] && footer="⏎ open · n new · t cache · esc"
     out+="${ESC}[K"$'\n'"${DIM}  ${footer}${RESET}${ESC}[K"
     # Synchronized output (mode 2026): tmux shows the frame only once it is complete
     printf '%s' "$ESC[?2026h$ESC[H$out$ESC[J$ESC[?2026l"
@@ -449,6 +454,7 @@ render() {
               issue_prefetch_selected
               ;;
             t) [ "$issue_mode" = 1 ] && issue_ttl_cycle ;;
+            n) [ "$issue_mode" = 1 ] && issue_new ;;
             r) # redraw request; the issue popup also uses it to say which issue it shows
               local shown at
               shown=$(tmux show -gv @claude_issue_selected 2>/dev/null)

@@ -13,12 +13,26 @@ fields=repository,number,title,url,updatedAt
 jq_rows='.[] | [.updatedAt, .repository.name, (.number | tostring), $a, (.title | gsub("[\t\n]"; " ")), .url] | @tsv'
 
 tmp=$(mktemp "${CACHE%/*}/issues.XXXXXX")
-trap 'rm -f "$tmp" "$tmp.all"' EXIT
+trap 'rm -f "$tmp" "$tmp.all" "$tmp.merged"' EXIT
 # assigned rows sort first within a url, so the dedupe keeps "assigned" when an issue is both
 {
   gh search issues --assignee "$USER_LOGIN" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"1\"}"
   gh search issues --author "$USER_LOGIN" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"0\"}"
 } | sort -t$'\t' -k6,6 -k4,4r | awk -F'\t' '!seen[$6]++' | sort -t$'\t' -k1,1r | cut -f2- >"$tmp.all"
+
+# Issues created from the sidebar in the last 15 minutes stay in, at the top, even while
+# GitHub's search does not list them yet (created.tsv: epoch, then the cache row)
+created=${CACHE%/*}/created.tsv
+if [ -f "$created" ]; then
+  awk -F'\t' -v cutoff=$(($(date +%s) - 900)) '$1 >= cutoff' "$created" >"$created.tmp" && mv "$created.tmp" "$created"
+  awk -F'\t' -v created="$created" '
+    FILENAME == created { row[++n] = $2 FS $3 FS $4 FS $5 FS $6; url[n] = $6; next }
+    { listed[$5] = 1; rest[++m] = $0 }
+    END {
+      for (i = n; i >= 1; i--) if (!(url[i] in listed) && !(url[i] in done)) { print row[i]; done[url[i]] = 1 }
+      for (i = 1; i <= m; i++) print rest[i]
+    }' "$created" "$tmp.all" >"$tmp.merged" && mv "$tmp.merged" "$tmp.all"
+fi
 
 # Issues closed from the issue view in the last 15 minutes stay out, even while GitHub's
 # search still lists them as open; older entries are dropped from closed.tsv
