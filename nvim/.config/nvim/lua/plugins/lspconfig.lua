@@ -6,14 +6,8 @@ return {
         enabled = false,
       },
       servers = {
-        gopls = {
-          settings = {
-            gopls = {
-              staticcheck = false,
-            },
-          },
-        },
         elixirls = {},
+        html = {},
       },
     },
   },

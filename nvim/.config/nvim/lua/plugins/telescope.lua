@@ -1,5 +1,5 @@
 local find_cmd = {
-  "fd",
+  "fdfind",
   "--type",
   "f",
   "--hidden",
