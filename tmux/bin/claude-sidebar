@@ -362,6 +362,7 @@ render() {
   local issue_offset=0 issue_total=0 issue_sel=0 issue_filter= filter_typing=0 last_hover= followed_issue=
   local nav=0 nav_target= issue_url= window_width=0 window_id= checked_at=-99
   # Only follow issues the popup moves to from now on, not one it showed before we started
+  local last_frame=
   followed_issue=$(tmux show -gv @claude_issue_selected 2>/dev/null)
 
   local version
@@ -505,8 +506,13 @@ render() {
         printf -v out '%s\n' "${frame[@]}"
         out=${out%$'\n'}
       fi
-      # Synchronized output (mode 2026): tmux shows the frame only once it is complete
-      printf '%s' "$ESC[?2026h$ESC[H$out$ESC[J$ESC[?2026l"
+      # Synchronized output (mode 2026): tmux shows the frame only once it is complete.
+      # Unchanged frames are not sent again: tmux keeps the pane's contents, and every
+      # redraw under an open popup made tmux repaint the popup over it (a flicker every 2s)
+      if [ "$out" != "$last_frame" ]; then
+        printf '%s' "$ESC[?2026h$ESC[H$out$ESC[J$ESC[?2026l"
+        last_frame=$out
+      fi
     fi
 
     # The status bar normally drives tmux-continuum's autosave; with it hidden, the

@@ -450,6 +450,7 @@ view() {
     [[ $url =~ github\.com/([^/]+/[^/]+)/issues/([0-9]+) ]] || { text=("Not an issue url: $url"); return; }
     repo=${BASH_REMATCH[1]} num=${BASH_REMATCH[2]} top=0 title= labels= shown_images=
     printf '%s' "$ESC[2J$ESC[H${DIM} Loading $repo#$num…$RESET"
+    last_frame=
     fetch_issue "$repo" "$num" "$width" wait
     base=$(cache_base "$repo" "$num" "$width")
     if [ -s "$base.txt" ]; then
@@ -507,6 +508,7 @@ view() {
 
   load "$url"
   local message= confirm=0 key k
+  local last_frame=
   while true; do
     compose
     local rows body last out= i
@@ -527,7 +529,13 @@ view() {
     local footer=" ${KEY}↑/↓${DIM} issue ${at:-–} · ${vhint}${KEY}o${DIM} browser · ${KEY}c${DIM} Claude Code · ${KEY}x${DIM} close issue · ${KEY}⌫${DIM} back · ${KEY}j/k${DIM} scroll$pos"
     [ -n "$message" ] && footer=" ${WARN}${message}${RESET}"
     [ "$confirm" = 1 ] && footer=" ${WARN}Close $repo#$num?${RESET}  ${KEY}y${DIM} completed · ${KEY}n${DIM} not planned · ${KEY}esc${DIM} cancel"
-    printf '%s' "$ESC[?2026h$ESC[H$out$ESC[K"$'\n'"$footer$RESET$ESC[K$ESC[?2026l"
+    # Only when something changed: the loop wakes every second, and repainting an unchanged
+    # popup made it (and the sidebar under it) flicker
+    local frame="$out$ESC[K"$'\n'"$footer$RESET$ESC[K"
+    if [ "$frame" != "$last_frame" ]; then
+      printf '%s' "$ESC[?2026h$ESC[H$frame$ESC[?2026l"
+      last_frame=$frame
+    fi
 
     # Wake every second, so images that finish loading appear without a key press
     IFS= read -rsn1 -d '' -t 1 key || continue
