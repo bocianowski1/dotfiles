@@ -6,6 +6,8 @@
 #   claude-sidebar opened <window> record when <window> was switched to (tmux hook)
 #   claude-sidebar refresh       redraw every sidebar now (tmux and Claude hooks)
 #   claude-sidebar todo-*        add, tick off and edit todos (sidebar keys a/e, clicks, prefix T)
+#   claude-sidebar focus-in      refetch issues after one was opened from the sidebar (tmux hook)
+#   claude-sidebar issues-focus  keyboard into the issue list: j/k, Enter, Esc (prefix i)
 #   claude-sidebar render        draw loop running inside a sidebar pane
 # Each window is a group; each Claude pane in it is an item with a state dot on the right.
 WIDTH=34
@@ -95,14 +97,94 @@ todo_lines() {
   [ "$total" -gt 0 ] || { todo_lines+=("${DIM}  Nothing to do${RESET}") todo_refs+=(""); }
 }
 
-# Refresh the calendar cache in the background every 5 minutes (one fetch at a time)
+# Refresh the calendar cache in the background every 5 minutes, or now with "force"
 calendar_fetch() {
   [ -f "$CALENDAR_URL_FILE" ] || return
   local age=999999
   [ -f "$CALENDAR_CACHE" ] && age=$(($(date +%s) - $(stat -c %Y "$CALENDAR_CACHE")))
-  [ "$age" -ge 300 ] || return
+  [ "${1:-}" = force ] || [ "$age" -ge 300 ] || return
   mkdir -p "${CALENDAR_CACHE%/*}"
-  flock -n "${CALENDAR_CACHE%/*}/fetch.lock" "${self%/*}/claude-calendar" >/dev/null 2>&1 &
+  { flock -n "${CALENDAR_CACHE%/*}/fetch.lock" "${self%/*}/claude-calendar" && "$self" refresh; } >/dev/null 2>&1 &
+}
+
+ISSUES_CACHE=~/.cache/claude-sidebar/issues.tsv
+ISSUES_ROWS=8 # issues visible at once; the mouse wheel scrolls through the rest
+
+# GitHub issues window (from claude-issues' cache) into issue_lines / issue_urls,
+# starting at issue number $2 (0-based), highlighting issue $3 (-1 for none);
+# sets issue_total for scroll clamping
+issue_lines() {
+  local width=$1 offset=$2 sel=${3:--1} ESC=$'\e'
+  local SELBG="$ESC[48;5;238m"
+  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m" MINE="$ESC[38;5;214m"
+  issue_lines=() issue_urls=() issue_total=0
+  command -v gh >/dev/null || return
+  local -a rows=()
+  [ -f "$ISSUES_CACHE" ] && mapfile -t rows <"$ISSUES_CACHE"
+  issue_total=${#rows[@]}
+  local range=
+  [ "$issue_total" -gt "$ISSUES_ROWS" ] && range="$((offset + 1))–$((offset + ISSUES_ROWS > issue_total ? issue_total : offset + ISSUES_ROWS)) of $issue_total ↕"
+  [ "$issue_total" -gt 0 ] && [ -z "$range" ] && range="$issue_total open"
+  issue_lines+=("$(printf '%s Issues%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 8)) "$range" "$RESET")") issue_urls+=("")
+  [ "$issue_total" -gt 0 ] || { issue_lines+=("${DIM}  No open issues${RESET}") issue_urls+=(""); return; }
+
+  local i repo num mine title url ref max
+  for ((i = offset; i < offset + ISSUES_ROWS && i < issue_total; i++)); do
+    IFS=$'\t' read -r repo num mine title url <<<"${rows[i]}"
+    [ ${#repo} -gt 12 ] && repo="${repo:0:11}…"
+    ref="$repo#$num"
+    max=$((width - ${#ref} - 5))
+    [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
+    local dot=' '
+    [ "$mine" = 1 ] && dot="${MINE}●${RESET}"
+    local line="  $dot ${DIM}${ref}${RESET} $title"
+    if [ "$i" = "$sel" ]; then
+      # Keyboard selection: grey bar across the full width, kept through inner colour resets
+      line=" ${ESC}[38;5;215m▸${RESET}$dot ${DIM}${ref}${RESET} ${BOLD}$title"
+      line="${SELBG}${line//$RESET/$RESET$SELBG}${ESC}[K${RESET}"
+    fi
+    issue_lines+=("$line") issue_urls+=("$url")
+  done
+}
+
+# Refresh the issues cache in the background every 5 minutes, or now with "force"
+# (one fetch at a time); the sidebars redraw as soon as it lands
+issues_fetch() {
+  command -v gh >/dev/null || return
+  local age=999999
+  [ -f "$ISSUES_CACHE" ] && age=$(($(date +%s) - $(stat -c %Y "$ISSUES_CACHE")))
+  [ "${1:-}" = force ] || [ "$age" -ge 300 ] || return
+  mkdir -p "${ISSUES_CACHE%/*}"
+  { flock -n "${ISSUES_CACHE%/*}/issues.lock" "${self%/*}/claude-issues" && "$self" refresh; } >/dev/null 2>&1 &
+}
+
+# Issue list keyboard mode (prefix i). These work on render()'s locals.
+issue_scroll() { # $1 rows; keeps a selection inside the visible window
+  local last=$((issue_total - ISSUES_ROWS))
+  [ "$last" -ge 0 ] || last=0
+  issue_offset=$((issue_offset + $1))
+  [ "$issue_offset" -le "$last" ] || issue_offset=$last
+  [ "$issue_offset" -ge 0 ] || issue_offset=0
+  if [ "$issue_mode" = 1 ]; then
+    [ "$issue_sel" -ge "$issue_offset" ] || issue_sel=$issue_offset
+    [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_sel=$((issue_offset + ISSUES_ROWS - 1))
+  fi
+}
+issue_move() { # $1 issues; scrolls to keep the selection visible
+  [ "$issue_total" -gt 0 ] || return
+  issue_sel=$((issue_sel + $1))
+  [ "$issue_sel" -lt "$issue_total" ] || issue_sel=$((issue_total - 1))
+  [ "$issue_sel" -ge 0 ] || issue_sel=0
+  [ "$issue_sel" -ge "$issue_offset" ] || issue_offset=$issue_sel
+  [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_offset=$((issue_sel - ISSUES_ROWS + 1))
+}
+issue_open() { # $1 url; refetch when you come back to the terminal, since you may change it
+  open_url "$1"
+  tmux set -g @claude_issues_dirty 1
+}
+issue_mode_exit() {
+  issue_mode=0
+  tmux last-pane -t "$TMUX_PANE" 2>/dev/null || focus_window "$(tmux display -p -t "$TMUX_PANE" '#{window_id}')"
 }
 
 # Open a Teams join link in Windows (the browser hands it on to Teams)
@@ -151,10 +233,13 @@ render() {
   trap 'printf "%s" "$ESC[?1000l$ESC[?1006l$ESC[?25h"' EXIT
   printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1006h$ESC[2J"
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
-  local -a cal_lines cal_urls todo_lines todo_refs
+  local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls
+  local issue_offset=0 issue_total=0 issue_mode=0 issue_sel=0
 
   while true; do
-    read -r width height panes visible < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active}')
+    read -r width height panes visible focused < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active}')
+    # Keyboard mode ends when you click or move away from the sidebar
+    [ "$focused" = 1 ] || issue_mode=0
     # Only the sidebar is left in this window: close the window
     if [ "$panes" = 1 ]; then tmux kill-window -t "$TMUX_PANE"; exit 0; fi
 
@@ -204,38 +289,50 @@ render() {
       row=$((row + 1))
     done < <(tmux list-panes -s -t "$TMUX_PANE" -F "$FMT")
 
-    # Todo list and calendar pinned to the bottom, above the footer, with a line between them
-    local now i
+    # Bottom block, pinned above the footer: todo, calendar and issues, separated by lines.
+    # Built as (text, click target) pairs first so the padding above it can be measured.
+    local now i rule
     printf -v now '%(%s)T' -1
+    printf -v rule '%*s' $((width - 2)) ''
+    rule=" ${DIM}${rule// /─}${RESET}"
+    local -a b_text=() b_click=()
     todo_lines "$width"
-    calendar_lines "$width" "$now"
-    local sep=0
-    [ ${#cal_lines[@]} -gt 0 ] && sep=3 # blank, line, blank
-    local pad=$((height - (row - 1) - ${#todo_lines[@]} - sep - ${#cal_lines[@]} - 2))
-    [ "$pad" -ge 1 ] || pad=1
-    for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
-    row=$((row + pad))
     for i in "${!todo_lines[@]}"; do
-      out+="${todo_lines[i]}${ESC}[K"$'\n'
+      b_text+=("${todo_lines[i]}")
       case ${todo_refs[i]} in
-        edit) click[$row]=todo-edit ;;
-        [0-9]*) click[$row]="todo:${todo_refs[i]}" ;;
+        edit) b_click+=(todo-edit) ;;
+        [0-9]*) b_click+=("todo:${todo_refs[i]}") ;;
+        *) b_click+=("") ;;
       esac
-      row=$((row + 1))
     done
+    calendar_lines "$width" "$now"
     if [ ${#cal_lines[@]} -gt 0 ]; then
-      local rule
-      printf -v rule '%*s' $((width - 2)) ''
-      out+="${ESC}[K"$'\n'" ${DIM}${rule// /─}${RESET}${ESC}[K"$'\n'"${ESC}[K"$'\n'
-      row=$((row + 3))
+      b_text+=("" "$rule" "") b_click+=("" "" "")
       for i in "${!cal_lines[@]}"; do
-        out+="${cal_lines[i]}${ESC}[K"$'\n'
-        [ -n "${cal_urls[i]}" ] && click[$row]="url:${cal_urls[i]}"
-        row=$((row + 1))
+        b_text+=("${cal_lines[i]}") b_click+=("${cal_urls[i]:+url:${cal_urls[i]}}")
+      done
+    fi
+    if [ "$issue_mode" = 1 ]; then issue_lines "$width" "$issue_offset" "$issue_sel"; else issue_lines "$width" "$issue_offset"; fi
+    if [ ${#issue_lines[@]} -gt 0 ]; then
+      b_text+=("" "$rule" "") b_click+=("" "" "")
+      for i in "${!issue_lines[@]}"; do
+        b_text+=("${issue_lines[i]}") b_click+=("${issue_urls[i]:+issue:${issue_urls[i]}}")
       done
     fi
 
-    out+="${ESC}[K"$'\n'"${DIM}  q close · prefix a jump${RESET}${ESC}[K"
+    local pad=$((height - (row - 1) - ${#b_text[@]} - 2))
+    [ "$pad" -ge 1 ] || pad=1
+    for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
+    row=$((row + pad))
+    for i in "${!b_text[@]}"; do
+      out+="${b_text[i]}${ESC}[K"$'\n'
+      [ -n "${b_click[i]}" ] && click[$row]=${b_click[i]}
+      row=$((row + 1))
+    done
+
+    local footer="q close · R refresh"
+    [ "$issue_mode" = 1 ] && footer="j/k move · ⏎ open · esc back"
+    out+="${ESC}[K"$'\n'"${DIM}  ${footer}${RESET}${ESC}[K"
     printf '%s' "$ESC[H$out$ESC[J"
 
     # The status bar normally drives tmux-continuum's autosave; with it hidden, the
@@ -244,30 +341,76 @@ render() {
       "$continuum" >/dev/null 2>&1 &
       last_continuum=$SECONDS
     fi
-    [ "$visible" = 1 ] && calendar_fetch
+    if [ "$visible" = 1 ]; then
+      calendar_fetch
+      issues_fetch
+    fi
 
-    # Wait up to 2s; `refresh` wakes us early by typing "r" into this pane
-    local key k
-    if read -rsn1 -t 2 key; then
-      while read -rsn1 -t 0.01 k; do key+=$k; done
-      # Left-button press, SGR encoding: ESC [ < 0 ; column ; row M
-      if [[ $key =~ $'\e'\[\<0\;[0-9]+\;([0-9]+)M ]]; then
-        local target=${click[${BASH_REMATCH[1]}]:-}
-        case $target in
-          @*) focus_window "$target" ;;
-          %*) tmux switch-client -t "$target" ;;
-          url:*) open_url "${target#url:}" ;;
-          todo:*) "$self" todo-done "${target#todo:}" ;;
-          todo-edit) "$self" todo-edit ;;
-        esac
-      elif [[ $key == *q* ]]; then
-        off
-        exit 0
-      elif [[ $key == *a* ]]; then
-        "$self" todo-prompt
-      elif [[ $key == *e* ]]; then
-        "$self" todo-edit
-      fi
+    # Wait up to 2s; `refresh` wakes us early by typing "r" into this pane. Everything that
+    # arrived is then handled token by token: mouse reports, arrow keys, Esc, single keys.
+    # (-d '' so Enter arrives as a newline instead of ending the read)
+    local key k tok
+    if read -rsn1 -d '' -t 2 key; then
+      while read -rsn1 -d '' -t 0.01 k; do key+=$k; done
+      while [ -n "$key" ]; do
+        if [[ $key =~ ^$'\e'\[\<([0-9]+)\;[0-9]+\;([0-9]+)([Mm]) ]]; then
+          # SGR mouse report: ESC [ < button ; column ; row M (press) or m (release)
+          tok=${BASH_REMATCH[0]}
+          case ${BASH_REMATCH[1]}${BASH_REMATCH[3]} in
+            64M) issue_scroll -1 ;;
+            65M) issue_scroll 1 ;;
+            0M)
+              local target=${click[${BASH_REMATCH[2]}]:-}
+              case $target in
+                @*) focus_window "$target" ;;
+                %*) tmux switch-client -t "$target" ;;
+                url:*) open_url "${target#url:}" ;;
+                issue:*) issue_open "${target#issue:}" ;;
+                todo:*) "$self" todo-done "${target#todo:}" ;;
+                todo-edit) "$self" todo-edit ;;
+              esac
+              ;;
+          esac
+        elif [[ $key == $'\e'[[O][AB]* ]]; then
+          tok=${key:0:3}
+          [ "$issue_mode" = 1 ] && { [ "${tok:2}" = A ] && issue_move -1 || issue_move 1; }
+        elif [[ $key == $'\e'* ]]; then
+          tok=${key:0:1}
+          [ "$issue_mode" = 1 ] && issue_mode_exit
+        else
+          tok=${key:0:1}
+          case $tok in
+            I) # sent by `claude-sidebar issues-focus` (prefix i)
+              issue_mode=1
+              [ "$issue_sel" -ge "$issue_offset" ] && [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_sel=$issue_offset
+              ;;
+            j) [ "$issue_mode" = 1 ] && issue_move 1 ;;
+            k) [ "$issue_mode" = 1 ] && issue_move -1 ;;
+            g) [ "$issue_mode" = 1 ] && issue_move -"$issue_total" ;;
+            G) [ "$issue_mode" = 1 ] && issue_move "$issue_total" ;;
+            $'\n' | $'\r')
+              if [ "$issue_mode" = 1 ]; then
+                local url
+                url=$(sed -n "$((issue_sel + 1))p" "$ISSUES_CACHE" | cut -f5)
+                [ -n "$url" ] && issue_open "$url"
+              fi
+              ;;
+            q)
+              if [ "$issue_mode" = 1 ]; then issue_mode_exit; else
+                off
+                exit 0
+              fi
+              ;;
+            a) "$self" todo-prompt ;;
+            e) "$self" todo-edit ;;
+            R)
+              calendar_fetch force
+              issues_fetch force
+              ;;
+          esac
+        fi
+        key=${key:${#tok}}
+      done
     fi
   done
 }
@@ -282,6 +425,27 @@ opened)
   "$self" refresh
   ;;
 render) render ;;
+issues-focus)
+  # prefix i: put the keyboard in the issue list of the current window's sidebar
+  [ "$(tmux show -gv @claude_sidebar_on 2>/dev/null)" = 1 ] || on
+  win=$(tmux display -p '#{window_id}')
+  for _ in $(seq 20); do # a sidebar that was just opened needs a moment to mark itself
+    sb=$(tmux list-panes -t "$win" -F '#{pane_id} #{@claude_sidebar}' | awk '$2 == "1" { print $1 }')
+    [ -n "$sb" ] && break
+    sleep 0.1
+  done
+  [ -n "$sb" ] || exit 0
+  tmux select-pane -t "$sb"
+  tmux send-keys -t "$sb" I
+  ;;
+focus-in)
+  # Terminal regained focus (tmux hook): if an issue was opened from the sidebar, refetch now
+  # and again 30s later, since GitHub's search can take a little while to see a change
+  [ "$(tmux show -gv @claude_issues_dirty 2>/dev/null)" = 1 ] || exit 0
+  tmux set -gu @claude_issues_dirty
+  issues_fetch force
+  (sleep 30 && issues_fetch force) >/dev/null 2>&1 &
+  ;;
 todo-prompt)
   # A one-line popup reads the todo itself, so tmux never parses (or expands $ in) the text
   tmux display-popup -E -w 60% -h 3 -T " New todo " "'$self' todo-read"
@@ -306,7 +470,7 @@ todo-edit)
   tmux display-popup -E -w 70% -h 60% -T " Todo " "${EDITOR:-nvim} '$TODO_FILE'; '$self' refresh"
   ;;
 *)
-  echo "usage: claude-sidebar toggle | add <window-id> | opened <window-id> | refresh | render | todo-prompt | todo-read | todo-done <line> | todo-edit" >&2
+  echo "usage: claude-sidebar toggle | add <window-id> | opened <window-id> | refresh | render | todo-prompt | todo-read | todo-done <line> | todo-edit | focus-in | issues-focus" >&2
   exit 1
   ;;
 esac

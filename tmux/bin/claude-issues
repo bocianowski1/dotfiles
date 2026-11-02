@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Cache the open GitHub issues of torgermalling (assigned to or created by) for the tmux sidebar.
+# Writes ~/.cache/claude-sidebar/issues.tsv, most recently updated first:
+#   repo <TAB> number <TAB> assigned(1/0) <TAB> title <TAB> url
+# Always uses the torgermalling login, whichever gh account is active.
+set -euo pipefail
+USER_LOGIN=torgermalling
+CACHE=~/.cache/claude-sidebar/issues.tsv
+
+GH_TOKEN=$(gh auth token --user "$USER_LOGIN")
+export GH_TOKEN
+fields=repository,number,title,url,updatedAt
+jq_rows='.[] | [.updatedAt, .repository.name, (.number | tostring), $a, (.title | gsub("[\t\n]"; " ")), .url] | @tsv'
+
+tmp=$(mktemp "${CACHE%/*}/issues.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+{
+  gh search issues --assignee "$USER_LOGIN" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"1\"}"
+  gh search issues --author "$USER_LOGIN" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"0\"}"
+} | sort -t$'\t' -k6,6 -k4,4r | awk -F'\t' '!seen[$6]++' | sort -t$'\t' -k1,1r | cut -f2- >"$tmp"
+# assigned rows sort first within a url, so the dedupe keeps "assigned" when an issue is both
+chmod 600 "$tmp"
+mv "$tmp" "$CACHE"
+trap - EXIT
