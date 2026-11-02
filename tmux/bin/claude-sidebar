@@ -5,6 +5,7 @@
 #   claude-sidebar add <window>  give <window> a sidebar if sidebars are on (tmux hook)
 #   claude-sidebar opened <window> record when <window> was switched to (tmux hook)
 #   claude-sidebar refresh       redraw every sidebar now (tmux and Claude hooks)
+#   claude-sidebar todo-*        add, tick off and edit todos (sidebar keys a/e, clicks, prefix T)
 #   claude-sidebar render        draw loop running inside a sidebar pane
 # Each window is a group; each Claude pane in it is an item with a state dot on the right.
 WIDTH=34
@@ -67,6 +68,33 @@ calendar_lines() {
   [ "$shown" -gt 0 ] || { cal_lines+=("${DIM} No more meetings${RESET}") cal_urls+=(""); }
 }
 
+TODO_FILE=~/.config/claude-sidebar/todo.md
+TODO_MAX=8 # items shown
+
+# Open todo items ("- [ ] ..." lines of TODO_FILE) into the array todo_lines, with the
+# file line number of each into todo_refs (so a click can tick that line off)
+todo_lines() {
+  local width=$1 ESC=$'\e'
+  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
+  todo_lines=() todo_refs=()
+  local hint="a add · e edit"
+  todo_lines+=("$(printf '%s Todo%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 6)) "$hint" "$RESET")") todo_refs+=(edit)
+
+  local n=0 total=0 lineno text max=$((width - 5))
+  if [ -f "$TODO_FILE" ]; then
+    while IFS=: read -r lineno text; do
+      total=$((total + 1))
+      [ "$n" -lt "$TODO_MAX" ] || continue
+      text=${text#*- \[ \] }
+      [ ${#text} -gt "$max" ] && text="${text:0:max-1}…"
+      todo_lines+=("  ${DIM}○${RESET} $text") todo_refs+=("$lineno")
+      n=$((n + 1))
+    done < <(grep -n '^[[:space:]]*- \[ \] ' "$TODO_FILE")
+  fi
+  [ "$total" -gt "$n" ] && todo_lines+=("${DIM}    +$((total - n)) more${RESET}") todo_refs+=(edit)
+  [ "$total" -gt 0 ] || { todo_lines+=("${DIM}  Nothing to do${RESET}") todo_refs+=(""); }
+}
+
 # Refresh the calendar cache in the background every 5 minutes (one fetch at a time)
 calendar_fetch() {
   [ -f "$CALENDAR_URL_FILE" ] || return
@@ -123,7 +151,7 @@ render() {
   trap 'printf "%s" "$ESC[?1000l$ESC[?1006l$ESC[?25h"' EXIT
   printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1006h$ESC[2J"
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
-  local -a cal_lines cal_urls
+  local -a cal_lines cal_urls todo_lines todo_refs
 
   while true; do
     read -r width height panes visible < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active}')
@@ -176,15 +204,30 @@ render() {
       row=$((row + 1))
     done < <(tmux list-panes -s -t "$TMUX_PANE" -F "$FMT")
 
-    # Calendar pinned to the bottom, above the footer
-    local now
+    # Todo list and calendar pinned to the bottom, above the footer, with a line between them
+    local now i
     printf -v now '%(%s)T' -1
+    todo_lines "$width"
     calendar_lines "$width" "$now"
+    local sep=0
+    [ ${#cal_lines[@]} -gt 0 ] && sep=3 # blank, line, blank
+    local pad=$((height - (row - 1) - ${#todo_lines[@]} - sep - ${#cal_lines[@]} - 2))
+    [ "$pad" -ge 1 ] || pad=1
+    for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
+    row=$((row + pad))
+    for i in "${!todo_lines[@]}"; do
+      out+="${todo_lines[i]}${ESC}[K"$'\n'
+      case ${todo_refs[i]} in
+        edit) click[$row]=todo-edit ;;
+        [0-9]*) click[$row]="todo:${todo_refs[i]}" ;;
+      esac
+      row=$((row + 1))
+    done
     if [ ${#cal_lines[@]} -gt 0 ]; then
-      local pad=$((height - (row - 1) - ${#cal_lines[@]} - 2)) i
-      [ "$pad" -ge 1 ] || pad=1
-      for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
-      row=$((row + pad))
+      local rule
+      printf -v rule '%*s' $((width - 2)) ''
+      out+="${ESC}[K"$'\n'" ${DIM}${rule// /─}${RESET}${ESC}[K"$'\n'"${ESC}[K"$'\n'
+      row=$((row + 3))
       for i in "${!cal_lines[@]}"; do
         out+="${cal_lines[i]}${ESC}[K"$'\n'
         [ -n "${cal_urls[i]}" ] && click[$row]="url:${cal_urls[i]}"
@@ -214,10 +257,16 @@ render() {
           @*) focus_window "$target" ;;
           %*) tmux switch-client -t "$target" ;;
           url:*) open_url "${target#url:}" ;;
+          todo:*) "$self" todo-done "${target#todo:}" ;;
+          todo-edit) "$self" todo-edit ;;
         esac
       elif [[ $key == *q* ]]; then
         off
         exit 0
+      elif [[ $key == *a* ]]; then
+        "$self" todo-prompt
+      elif [[ $key == *e* ]]; then
+        "$self" todo-edit
       fi
     fi
   done
@@ -233,8 +282,31 @@ opened)
   "$self" refresh
   ;;
 render) render ;;
+todo-prompt)
+  # A one-line popup reads the todo itself, so tmux never parses (or expands $ in) the text
+  tmux display-popup -E -w 60% -h 3 -T " New todo " "'$self' todo-read"
+  ;;
+todo-read)
+  read -r -e -p " " text || exit 0
+  text=$(printf '%s' "$text" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  [ -n "$text" ] || exit 0
+  mkdir -p "${TODO_FILE%/*}"
+  [ -s "$TODO_FILE" ] && [ -n "$(tail -c1 "$TODO_FILE")" ] && echo >>"$TODO_FILE"
+  printf -- '- [ ] %s\n' "$text" >>"$TODO_FILE"
+  "$self" refresh
+  ;;
+todo-done)
+  # Tick off line $2, but only if it is still an open item (the file may have changed)
+  sed -i "${2}s/^\([[:space:]]*\)- \[ \] /\1- [x] /" "$TODO_FILE"
+  "$self" refresh
+  ;;
+todo-edit)
+  mkdir -p "${TODO_FILE%/*}"
+  touch "$TODO_FILE"
+  tmux display-popup -E -w 70% -h 60% -T " Todo " "${EDITOR:-nvim} '$TODO_FILE'; '$self' refresh"
+  ;;
 *)
-  echo "usage: claude-sidebar toggle | add <window-id> | opened <window-id> | refresh | render" >&2
+  echo "usage: claude-sidebar toggle | add <window-id> | opened <window-id> | refresh | render | todo-prompt | todo-read | todo-done <line> | todo-edit" >&2
   exit 1
   ;;
 esac
