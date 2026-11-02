@@ -350,7 +350,9 @@ render() {
     if [ ${#cal_lines[@]} -gt 0 ]; then
       b_text+=("" "$rule" "") b_click+=("" "" "")
       for i in "${!cal_lines[@]}"; do
-        b_text+=("${cal_lines[i]}") b_click+=("${cal_urls[i]:+url:${cal_urls[i]}}")
+        # No click action on meetings: explorer.exe opened the Documents folder for Teams
+        # links, and new Outlook has no documented link straight to its calendar
+        b_text+=("${cal_lines[i]}") b_click+=("")
       done
     fi
     if [ "$issue_mode" = 1 ]; then issue_lines "$width" "$issue_offset" "$issue_sel"; else issue_lines "$width" "$issue_offset"; fi
