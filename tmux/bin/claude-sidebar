@@ -302,91 +302,6 @@ issue_ttl_cycle() {
 }
 
 
-USAGE_DIR=~/.cache/claude-sidebar/usage # written by the Claude Code status line (claude/bin/statusline)
-
-# Claude usage bars into usage_lines: the account's 5-hour and weekly limits (from whichever
-# session reported last) and the context use of the Claude session in <window>
-usage_lines() { # <width> <window-id>
-  local width=$1 window=$2 ESC=$'\e'
-  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
-  usage_lines=()
-  [ -d "$USAGE_DIR" ] || return
-
-  # Only panes that still exist; the newest report holds the freshest rate limits.
-  # (Built-ins only: this used to run ls, basename, grep and tr for every report.)
-  local -A live=()
-  local f pane latest= ctx_file= active=
-  while read -r pane f; do
-    live[${pane#%}]=1
-    [ "$f" = 1 ] && active=${pane#%}
-  done < <(tmux list-panes -a -F '#{pane_id} #{?#{==:#{window_id},'"$window"'},#{pane_active},0}')
-  for f in "$USAGE_DIR"/*.tsv; do
-    [ -f "$f" ] || continue
-    pane=${f##*/}
-    pane=${pane%.tsv}
-    [ -n "${live[$pane]:-}" ] || continue
-    [ -z "$latest" ] || [ "$f" -nt "$latest" ] && latest=$f
-  done
-  [ -n "$latest" ] || return
-  # Context: the active pane of this window if it is a Claude session, else another Claude
-  # pane in this window, else the latest session anywhere
-  if [ -n "$active" ] && [ -f "$USAGE_DIR/$active.tsv" ]; then ctx_file=$USAGE_DIR/$active.tsv
-  else
-    while read -r pane; do
-      [ -f "$USAGE_DIR/${pane#%}.tsv" ] && { ctx_file=$USAGE_DIR/${pane#%}.tsv; break; }
-    done < <(tmux list-panes -t "$window" -F '#{pane_id}')
-    [ -n "$ctx_file" ] || ctx_file=$latest
-  fi
-
-  local -A u=() c=()
-  local k v
-  while IFS=$'\t' read -r k v; do u[$k]=$v; done <"$latest"
-  while IFS=$'\t' read -r k v; do c[$k]=$v; done <"$ctx_file"
-
-  local now
-  printf -v now '%(%s)T' -1
-  local model
-  printf -v model '%*s' $((width - 14)) "${c[model]:-}"
-  usage_lines+=("${BOLD} Claude usage${RESET}${DIM}${model}${RESET}")
-  usage_bar "5h" "${u[five_hour_pct]:-}" "${u[five_hour_resets]:-}" "$now" "$width"
-  usage_bar "week" "${u[seven_day_pct]:-}" "${u[seven_day_resets]:-}" "$now" "$width"
-  usage_bar "ctx" "${c[ctx_pct]:-}" "" "$now" "$width"
-}
-
-# One bar: "5h   ███░░░░░░░░   8%  1h52m" (orange from 50%, red from 80%)
-usage_bar() { # <label> <percent> <resets-at epoch or ""> <now> <width>
-  local label=$1 pct=$2 resets=$3 now=$4 width=$5 ESC=$'\e'
-  local RESET="$ESC[0m" DIM="$ESC[38;5;245m" when=
-  if [ -n "$resets" ]; then
-    local left=$((resets - now))
-    if [ "$left" -le 0 ]; then
-      pct=0 # the window has reset since the last report
-    elif [ "$left" -ge 86400 ]; then when="$((left / 86400))d$(((left % 86400) / 3600))h"
-    elif [ "$left" -ge 3600 ]; then when="$((left / 3600))h$(((left % 3600) / 60))m"
-    else when="$((left / 60))m"
-    fi
-  fi
-  if [ -z "$pct" ]; then
-    printf -v label '%-5s' "$label"
-    usage_lines+=("  ${label}${DIM}no data${RESET}")
-    return
-  fi
-  pct=${pct%%.*}
-  local colour="$ESC[38;5;114m" bar_w=$((width - 22)) filled
-  [ "$pct" -ge 50 ] && colour="$ESC[38;5;214m"
-  [ "$pct" -ge 80 ] && colour="$ESC[38;5;203m"
-  filled=$(((pct * bar_w + 50) / 100))
-  [ "$filled" -le "$bar_w" ] || filled=$bar_w
-  local full empty
-  printf -v full '%*s' "$filled" ''
-  printf -v empty '%*s' $((bar_w - filled)) ''
-  local shown_pct
-  printf -v label '%-5s' "$label"
-  printf -v shown_pct '%4s' "$pct%"
-  printf -v when '%-6s' "$when"
-  usage_lines+=("  ${label}${colour}${full// /█}${DIM}${empty// /░}${RESET} ${shown_pct} ${DIM}${when}${RESET}")
-}
-
 # Open a Teams join link in Windows (the browser hands it on to Teams)
 open_url() {
   if command -v explorer.exe >/dev/null; then explorer.exe "$1" >/dev/null 2>&1 &
@@ -443,9 +358,9 @@ render() {
   # flashed all sidebars whenever they restarted, e.g. on a script change)
   printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1003h$ESC[?1006h"
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
-  local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls usage_lines issue_rows nav_order
+  local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls issue_rows nav_order
   local issue_offset=0 issue_total=0 issue_sel=0 issue_filter= filter_typing=0 last_hover= followed_issue=
-  local nav=0 nav_target= issue_url= window_width=0 window_id= usage_at=-99 checked_at=-99
+  local nav=0 nav_target= issue_url= window_width=0 window_id= checked_at=-99
   # Only follow issues the popup moves to from now on, not one it showed before we started
   followed_issue=$(tmux show -gv @claude_issue_selected 2>/dev/null)
 
@@ -553,16 +468,6 @@ render() {
             *) b_click+=("issue:${issue_urls[i]}") ;;
           esac
         done
-      fi
-
-      # Usage changes slowly: rebuilt every 2s, reused for redraws in between (key presses)
-      if [ $((SECONDS - usage_at)) -ge 2 ]; then
-        usage_lines "$width" "$window_id"
-        usage_at=$SECONDS
-      fi
-      if [ ${#usage_lines[@]} -gt 0 ]; then
-        b_text+=("" "$rule" "") b_click+=("" "" "")
-        for i in "${!usage_lines[@]}"; do b_text+=("${usage_lines[i]}") b_click+=(""); done
       fi
 
       local pad=$((height - (row - 1) - ${#b_text[@]} - 2))

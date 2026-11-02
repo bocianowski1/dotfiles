@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Claude Code status line: prints user@host:cwd, and records usage for the tmux sidebar.
+"""Claude Code status line: user@host:cwd, then Claude usage as small bars.
 
-Claude Code runs this with a JSON description of the session on stdin. Besides printing the
-status line, it writes ~/.cache/claude-sidebar/usage/<tmux pane>.tsv (one key<TAB>value per
-line) with the session's context use and the account's 5-hour and weekly rate limits, for
-claude-sidebar to draw. The last raw input is kept in last-input.json for reference.
+Claude Code runs this with a JSON description of the session on stdin and shows what it
+prints. After the usual user@host:cwd it draws the account's 5-hour and weekly rate limits
+(with time to reset) and this session's context use: green, orange from 50%, red from 80%.
+Parts Claude Code does not report (rate limits on API-key accounts) are left out.
 """
 import json
 import os
 import socket
 import sys
 import time
-from pathlib import Path
 
-USAGE_DIR = Path.home() / ".cache/claude-sidebar/usage"
+BAR = 8
+GREEN, ORANGE, RED, DIM, RESET = "\033[38;5;114m", "\033[38;5;214m", "\033[38;5;203m", "\033[38;5;245m", "\033[0m"
 
 
 def pick(data, *path):
@@ -24,26 +24,27 @@ def pick(data, *path):
     return data
 
 
-def record(data: dict) -> None:
-    USAGE_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(USAGE_DIR, 0o700)
-    fields = {
-        "updated": int(time.time()),
-        "session": pick(data, "session_id"),
-        "model": pick(data, "model", "display_name"),
-        "ctx_pct": pick(data, "context_window", "used_percentage"),
-        "five_hour_pct": pick(data, "rate_limits", "five_hour", "used_percentage"),
-        "five_hour_resets": pick(data, "rate_limits", "five_hour", "resets_at"),
-        "seven_day_pct": pick(data, "rate_limits", "seven_day", "used_percentage"),
-        "seven_day_resets": pick(data, "rate_limits", "seven_day", "resets_at"),
-    }
-    pane = os.environ.get("TMUX_PANE", "").lstrip("%") or "none"
-    text = "".join(f"{k}\t{'' if v is None else v}\n" for k, v in fields.items())
-    for name, content in ((f"{pane}.tsv", text), ("last-input.json", json.dumps(data, indent=2))):
-        tmp = USAGE_DIR / f".{name}.tmp"
-        tmp.write_text(content)
-        os.chmod(tmp, 0o600)
-        tmp.replace(USAGE_DIR / name)
+def time_left(resets_at) -> str:
+    left = int(resets_at) - int(time.time())
+    if left >= 86400:
+        return f"{left // 86400}d{left % 86400 // 3600}h"
+    if left >= 3600:
+        return f"{left // 3600}h{left % 3600 // 60}m"
+    return f"{max(left, 0) // 60}m"
+
+
+def bar(label: str, pct, resets_at=None) -> str | None:
+    if pct is None:
+        return None
+    pct = int(pct)
+    if resets_at is not None and int(resets_at) <= time.time():
+        pct = 0  # the window has reset since Claude Code last heard about it
+    colour = RED if pct >= 80 else ORANGE if pct >= 50 else GREEN
+    filled = min(BAR, (pct * BAR + 50) // 100)
+    text = f"{DIM}{label}{RESET} {colour}{'█' * filled}{DIM}{'░' * (BAR - filled)}{RESET} {pct}%"
+    if resets_at is not None and pct > 0:
+        text += f" {DIM}{time_left(resets_at)}{RESET}"
+    return text
 
 
 def main() -> None:
@@ -51,16 +52,21 @@ def main() -> None:
         data = json.load(sys.stdin)
     except ValueError:
         data = {}
-    try:
-        record(data)
-    except OSError:
-        pass  # the status line itself must always print
     cwd = pick(data, "workspace", "current_dir") or os.getcwd()
     chroot = os.environ.get("debian_chroot", "")
     user = os.environ.get("USER") or os.getlogin()
     host = socket.gethostname().split(".")[0]
-    prefix = f"({chroot})" if chroot else ""
-    print(f"{prefix}\033[01;32m{user}@{host}\033[00m:\033[01;34m{cwd}\033[00m")
+    line = f"{f'({chroot})' if chroot else ''}\033[01;32m{user}@{host}\033[00m:\033[01;34m{cwd}\033[00m"
+
+    parts = [
+        bar("5h", pick(data, "rate_limits", "five_hour", "used_percentage"), pick(data, "rate_limits", "five_hour", "resets_at")),
+        bar("week", pick(data, "rate_limits", "seven_day", "used_percentage"), pick(data, "rate_limits", "seven_day", "resets_at")),
+        bar("ctx", pick(data, "context_window", "used_percentage")),
+    ]
+    parts = [p for p in parts if p]
+    if parts:
+        line += f"  {DIM}│{RESET}  " + f"  {DIM}·{RESET}  ".join(parts)
+    print(line)
 
 
 if __name__ == "__main__":
