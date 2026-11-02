@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.local/bin/agent-attention Claude 'Claude is waiting for approval or input.'"
+            "command": "$HOME/dotfiles/claude/bin/agent-attention Claude 'Claude is waiting for approval or input.'"
           },
           {
             "type": "command",

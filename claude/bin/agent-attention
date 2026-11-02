@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Windows toast notification from WSL: agent-attention [title] [body]
+# Needs the BurntToast PowerShell module on the Windows side (Install-Module BurntToast).
+set -euo pipefail
+
+title=${1:-Agent needs attention}
+body=${2:-An agent is waiting for your input or approval.}
+script="$(dirname "$(readlink -f "$0")")/toast.ps1"
+win_script=$(wslpath -w "$script")
+
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+  -File "$win_script" -Title "$title" -Body "$body" >/dev/null
