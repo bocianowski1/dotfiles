@@ -577,7 +577,13 @@ render() {
       [ "$tree_offset" -ge 0 ] || tree_offset=0
       local more head
       scroll_marks "$tree_offset" $((tree_total - tree_offset - tree_rows))
-      printf -v head '%s Claude Code%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 13)) "$more" "$RESET"
+      # Scrolled, the header says how many windows there are: "Windows (8)"
+      local title=" Claude Code" n=0
+      if [ "$tree_rows" -lt "$tree_total" ]; then
+        for i in "${tree_click[@]}"; do [[ $i == @* ]] && n=$((n + 1)); done
+        title=" Windows ($n)"
+      fi
+      printf -v head '%s%s%s%*s%s' "$BOLD" "$title" "$RESET$DIM" $((width - ${#title} - 1)) "$more" "$RESET"
       out="$head${ESC}[K"$'\n'"${ESC}[K"$'\n'
       tree_top=3
       for ((i = tree_offset; i < tree_offset + tree_rows; i++)); do
