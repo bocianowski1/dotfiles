@@ -15,7 +15,7 @@
 WIDTH=34
 self=$(readlink -f "$0")
 US=$'\x1f' # field separator: not whitespace, so empty fields survive read
-FMT="#{window_id}${US}#{pane_id}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{pane_active}${US}#{@claude_state}${US}#{pane_title}${US}#{pane_current_path}${US}#{pane_current_command}${US}#{@claude_sidebar}${US}#{@last_opened}${US}#{@claude_marked}"
+FMT="#{window_id}${US}#{pane_id}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{pane_active}${US}#{@claude_state}${US}#{pane_title}${US}#{pane_current_path}${US}#{pane_current_command}${US}#{@claude_sidebar}${US}#{@last_opened}${US}#{@claude_marked}${US}#{@claude_replied}"
 
 sidebar_panes() {
   tmux list-panes -a -F '#{pane_id} #{@claude_sidebar}' | awk '$2 == "1" { print $1 }'
@@ -349,6 +349,7 @@ activate() { # <click target>
       ;;
     todo-edit) "$self" todo-edit ;;
     ttl) issue_ttl_cycle ;;
+    recent) minutes_cycle "$RECENT_FILE" ;;
     filter) filter_typing=1 ;;
   esac
 }
@@ -370,22 +371,28 @@ issue_prefetch_selected() { issue_url_at "$issue_sel"; issue_prefetch "$issue_ur
 
 # How long fetched issues are cached (minutes, used by claude-issue); click or "t" cycles it
 ISSUE_TTL_FILE=~/.config/claude-sidebar/issue-ttl
-ISSUE_TTL_STEPS=(5 15 30 60)
-issue_ttl() { # into issue_ttl_minutes (no subshell: this runs on every redraw)
-  issue_ttl_minutes=15
-  [ -f "$ISSUE_TTL_FILE" ] && read -r issue_ttl_minutes <"$ISSUE_TTL_FILE"
-  [[ $issue_ttl_minutes =~ ^[0-9]+$ ]] || issue_ttl_minutes=15
+# How long a session counts as having answered recently (orange dot); a click on the
+# header's "●15m" cycles it
+RECENT_FILE=~/.config/claude-sidebar/recent-minutes
+MINUTE_STEPS=(5 15 30 60) # the values a click cycles through, for both settings
+
+# A minutes setting: its file's number, or 15 (no subshell: this runs on every redraw)
+minutes_setting() { # <file> → minutes
+  minutes=15
+  [ -f "$1" ] && read -r minutes <"$1"
+  [[ $minutes =~ ^[0-9]+$ ]] || minutes=15
 }
-issue_ttl_cycle() {
-  local now next=${ISSUE_TTL_STEPS[0]} i issue_ttl_minutes
-  issue_ttl
-  now=$issue_ttl_minutes
-  for i in "${!ISSUE_TTL_STEPS[@]}"; do
-    [ "${ISSUE_TTL_STEPS[i]}" -gt "$now" ] && { next=${ISSUE_TTL_STEPS[i]}; break; }
+minutes_cycle() { # <file>: on to the next of MINUTE_STEPS
+  local minutes next=${MINUTE_STEPS[0]} i
+  minutes_setting "$1"
+  for i in "${MINUTE_STEPS[@]}"; do
+    [ "$i" -gt "$minutes" ] && { next=$i; break; }
   done
-  mkdir -p "${ISSUE_TTL_FILE%/*}"
-  echo "$next" >"$ISSUE_TTL_FILE"
+  mkdir -p "${1%/*}"
+  echo "$next" >"$1"
 }
+issue_ttl() { local minutes; minutes_setting "$ISSUE_TTL_FILE"; issue_ttl_minutes=$minutes; } # into issue_ttl_minutes
+issue_ttl_cycle() { minutes_cycle "$ISSUE_TTL_FILE"; }
 
 
 # Open a Teams join link in Windows (the browser hands it on to Teams)
@@ -483,10 +490,13 @@ render() {
       # fitted, scrolled, into the room the bottom block leaves
       local out= last_win= row=3
       local -a tree_text=() tree_click=()
+      local minutes recent_minutes
+      minutes_setting "$RECENT_FILE"
+      recent_minutes=$minutes
       click=()
       local today
       printf -v today '%(%F)T' -1
-      while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened marked; do
+      while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened marked replied; do
         if [ "$widx" != "$last_win" ]; then
           [ -n "$last_win" ] && tree_text+=("") tree_click+=("")
           local colour=$WINDOW
@@ -513,10 +523,14 @@ render() {
         title=${title#"${title%%[[:alnum:]]*}"}
         case $title in "" | */* | "$host") title=${path##*/} ;; esac
         local dot
+        # red: waiting on you · green: working · orange: answered in the last recent_minutes
         case $state in
-          attention) dot="$ESC[1;38;5;214m●" ;;
+          attention) dot="$ESC[1;38;5;203m●" ;;
           running) dot="$ESC[38;5;114m●" ;;
-          idle) dot="$ESC[38;5;245m●" ;;
+          idle)
+            dot="$ESC[38;5;245m●"
+            [ -n "$replied" ] && [ $((EPOCHSECONDS - replied)) -lt $((recent_minutes * 60)) ] && dot="$ESC[38;5;214m●"
+            ;;
           *) dot="$ESC[38;5;240m○" ;; # Claude is running, but its hooks have not reported yet
         esac
         local marker=' '
@@ -604,8 +618,12 @@ render() {
         for i in "${tree_click[@]}"; do [[ $i == @* ]] && n=$((n + 1)); done
         title=" Windows ($n)"
       fi
-      printf -v head '%s%s%s%*s%s' "$BOLD" "$title" "$RESET$DIM" $((width - ${#title} - 1)) "$more" "$RESET"
+      # "●15m": how long the orange "answered recently" dot lasts; a click changes it
+      local recent_plain="●${recent_minutes}m${more:+ $more}" gap
+      printf -v gap '%*s' $((width - ${#title} - ${#recent_plain} - 1)) ''
+      head="$BOLD$title$RESET$gap$ESC[38;5;214m●$RESET$DIM${recent_minutes}m${more:+ $more}$RESET"
       out="$head${ESC}[K"$'\n'"${ESC}[K"$'\n'
+      click[1]=recent
       tree_top=3
       for ((i = tree_offset; i < tree_offset + tree_rows; i++)); do
         out+="${tree_text[i]}${ESC}[K"$'\n'

@@ -16,7 +16,7 @@ args=()
 i=0
 while IFS=$'\t' read -r state pane target name path; do
   case $state in
-    attention) dot='#[fg=colour214,bold]● needs you#[default]' ;;
+    attention) dot='#[fg=colour203,bold]● needs you#[default]' ;;
     running)   dot='#[fg=colour114]● running  #[default]' ;;
     *)         dot='#[fg=colour245]● idle     #[default]' ;;
   esac
