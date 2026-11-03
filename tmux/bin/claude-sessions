@@ -1,5 +1,31 @@
 #!/usr/bin/env bash
 # Popup menu of every Claude Code pane, most urgent first. Pick one to jump to it.
+#   claude-sessions [client]                  the menu (prefix a)
+#   claude-sessions next <client> <pane>      jump to the next session that needs you
+#                                             (prefix g): waiting on you (red) first, then
+#                                             answered recently (orange), newest first;
+#                                             pressed again, on to the one after <pane>
+if [ "${1:-}" = next ]; then
+  client=$2 current=$3 minutes=15
+  read -r minutes 2>/dev/null <~/.config/claude-sidebar/recent-minutes
+  [[ $minutes =~ ^[0-9]+$ ]] || minutes=15
+  mapfile -t order < <(tmux list-panes -a -F '#{@claude_state} #{?#{@claude_replied},#{@claude_replied},0} #{pane_id} #{session_name}:#{window_index}.#{pane_index}' |
+    awk -v now="$EPOCHSECONDS" -v keep=$((minutes * 60)) '
+      $1 == "attention" { print 0, 0, $3, $4 }
+      $1 == "idle" && $2 > 0 && now - $2 < keep { print 1, -$2, $3, $4 }' |
+    sort -k1,1n -k2,2n -k4,4V | cut -d' ' -f3)
+  if [ ${#order[@]} -eq 0 ]; then
+    tmux display-message -c "$client" "No Claude session needs you"
+    exit 0
+  fi
+  next=${order[0]}
+  for i in "${!order[@]}"; do
+    [ "${order[i]}" = "$current" ] && next=${order[(i + 1) % ${#order[@]}]}
+  done
+  tmux switch-client -c "$client" -t "$next"
+  exit 0
+fi
+
 client=${1:-}
 keys=(1 2 3 4 5 6 7 8 9 a b c d e f g h i j k l m n o p r s t u v w x y z)
 
