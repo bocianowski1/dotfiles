@@ -16,6 +16,7 @@ LIB=$(cd "$TEST_DIR/../lib" 2>/dev/null && pwd)
 ESC=$'\e'
 
 setup() {
+  REAL_HOME=$HOME # (only to find uv's package cache)
   T_HOME=$(mktemp -d "${TMPDIR:-/tmp}/sidebar-test.XXXXXX")
   SOCK="sidebar-test-$$-$RANDOM"
   # A gh that always fails: the sidebar shows issues when gh exists, but must never call it
