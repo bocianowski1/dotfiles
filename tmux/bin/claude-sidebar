@@ -147,7 +147,9 @@ todo_lines() {
   local head title=" Todo" more
   [ "$total" -gt 0 ] && title+=" ($total)"
   scroll_marks "$todo_offset" $((total - todo_offset - TODO_ROWS))
-  printf -v head '%s%s%s %s%*s%s' "$BOLD" "$title" "$RESET$DIM" "$more" $((width - ${#title} - ${#more} - 1)) "a add · e edit" "$RESET"
+  local hint="a add · e edit" room=$((width - ${#title} - ${#more} - 2))
+  [ "$room" -ge ${#hint} ] || hint=
+  printf -v head '%s%s%s %s%*s%s' "$BOLD" "$title" "$RESET$DIM" "$more" $((room + 1)) "$hint" "$RESET"
   todo_lines+=("$head") todo_refs+=(edit)
   todo_lines+=("${todo_all[@]:todo_offset:TODO_ROWS}") todo_refs+=("${todo_all_refs[@]:todo_offset:TODO_ROWS}")
   [ "$total" -gt 0 ] || { todo_lines+=("${DIM}  Nothing to do${RESET}") todo_refs+=(""); }
@@ -192,7 +194,8 @@ calendar_fetch() {
 }
 
 ISSUES_CACHE=~/.cache/claude-sidebar/issues.tsv
-ISSUES_ROWS=8 # issues visible at once; the mouse wheel scrolls through the rest
+ISSUES_ROWS=8 # issues visible at most; the mouse wheel scrolls through the rest
+issue_rows_vis=$ISSUES_ROWS # fewer on a short pane (render works it out every frame)
 
 # The issues to show, into issue_rows (cache rows) and issue_total: all of claude-issues'
 # cache, or those matching issue_filter (case-insensitive, on repo#number and title)
@@ -210,7 +213,7 @@ load_issue_rows() {
   fi
   issue_total=${#issue_rows[@]}
   [ "$issue_sel" -lt "$issue_total" ] || issue_sel=$((issue_total > 0 ? issue_total - 1 : 0))
-  local last=$((issue_total - ISSUES_ROWS))
+  local last=$((issue_total - issue_rows_vis))
   [ "$last" -ge 0 ] || last=0
   [ "$issue_offset" -le "$last" ] || issue_offset=$last
 }
@@ -229,9 +232,9 @@ issue_lines() {
   issue_lines=() issue_urls=()
   command -v gh >/dev/null || return
   local range=
-  [ "$issue_total" -gt "$ISSUES_ROWS" ] && range="$((offset + 1))–$((offset + ISSUES_ROWS > issue_total ? issue_total : offset + ISSUES_ROWS)) of $issue_total ↕"
+  [ "$issue_total" -gt "$issue_rows_vis" ] && range="$((offset + 1))–$((offset + issue_rows_vis > issue_total ? issue_total : offset + issue_rows_vis)) of $issue_total ↕"
   [ "$issue_total" -gt 0 ] && [ -z "$range" ] && range="$issue_total open"
-  [ -n "$issue_filter" ] && [ "$issue_total" -le "$ISSUES_ROWS" ] && range="$issue_total match"
+  [ -n "$issue_filter" ] && [ "$issue_total" -le "$issue_rows_vis" ] && range="$issue_total match"
   local head
   printf -v head '%s Issues%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 8)) "$range" "$RESET"
   issue_lines+=("$head") issue_urls+=("")
@@ -247,7 +250,7 @@ issue_lines() {
   fi
 
   local i repo num mine title url ref max
-  for ((i = offset; i < offset + ISSUES_ROWS && i < issue_total; i++)); do
+  for ((i = offset; i < offset + issue_rows_vis && i < issue_total; i++)); do
     IFS=$'\t' read -r repo num mine title url <<<"${issue_rows[i]}"
     [ ${#repo} -gt 12 ] && repo="${repo:0:11}…"
     ref="$repo#$num"
@@ -277,14 +280,14 @@ issues_fetch() {
 # nav_target, is a click target ("@window", "%pane", "issue:<url>", "todo:<line>", ...), so
 # Enter does exactly what a click on that row does; nav_order lists the targets on screen.
 issue_scroll() { # $1 rows; keeps a selected issue inside the visible window
-  local last=$((issue_total - ISSUES_ROWS))
+  local last=$((issue_total - issue_rows_vis))
   [ "$last" -ge 0 ] || last=0
   issue_offset=$((issue_offset + $1))
   [ "$issue_offset" -le "$last" ] || issue_offset=$last
   [ "$issue_offset" -ge 0 ] || issue_offset=0
   if [ "$nav" = 1 ] && [[ $nav_target == issue:* ]]; then
     [ "$issue_sel" -ge "$issue_offset" ] || issue_sel=$issue_offset
-    [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_sel=$((issue_offset + ISSUES_ROWS - 1))
+    [ "$issue_sel" -lt $((issue_offset + issue_rows_vis)) ] || issue_sel=$((issue_offset + issue_rows_vis - 1))
     issue_url_at "$issue_sel"
     nav_target="issue:$issue_url"
   fi
@@ -295,7 +298,7 @@ issue_move() { # $1 issues; scrolls to keep the selection visible, prefetches th
   [ "$issue_sel" -lt "$issue_total" ] || issue_sel=$((issue_total - 1))
   [ "$issue_sel" -ge 0 ] || issue_sel=0
   [ "$issue_sel" -ge "$issue_offset" ] || issue_offset=$issue_sel
-  [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_offset=$((issue_sel - ISSUES_ROWS + 1))
+  [ "$issue_sel" -lt $((issue_offset + issue_rows_vis)) ] || issue_offset=$((issue_sel - issue_rows_vis + 1))
   issue_prefetch_selected
 }
 nav_select_issue() { # <index>: select that issue (scrolled into view, prefetched)
@@ -433,13 +436,15 @@ render() {
   host=$(hostname)
   continuum=~/.tmux/plugins/tmux-continuum/scripts/continuum_save.sh
   # Hide the cursor; ask for SGR mouse reports of clicks and of movement (for hover prefetch)
-  trap 'printf "%s" "$ESC[?1003l$ESC[?1000l$ESC[?1006l$ESC[?25h"; stty echo 2>/dev/null' EXIT
+  trap 'printf "%s" "$ESC[?1003l$ESC[?1000l$ESC[?1006l$ESC[?25h$ESC[?7h"; stty echo 2>/dev/null' EXIT
   # Echo off for good, not just while read waits: mouse movement arriving while the sidebar
   # is busy (e.g. starting a prefetch) was otherwise echoed as ^[[<35;… after the footer
   stty -echo 2>/dev/null
   # (no screen clear: every frame overwrites each line and clears below, and a clear here
   # flashed all sidebars whenever they restarted, e.g. on a script change)
-  printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1003h$ESC[?1006h"
+  # Autowrap off: a line too long for the pane is cut instead of wrapping onto another row,
+  # which pushed the top of the frame out of the pane
+  printf '%s' "$ESC[?25l$ESC[?7l$ESC[?1000h$ESC[?1003h$ESC[?1006h"
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
   local -a cal_lines cal_urls todo_lines todo_refs todo_all todo_all_refs issue_lines issue_urls issue_rows nav_order
   local issue_offset=0 issue_total=0 issue_sel=0 issue_filter= filter_typing=0 last_hover= followed_issue=
@@ -460,6 +465,10 @@ render() {
     local -a tmux_out
     mapfile -t tmux_out < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active} #{window_width} #{window_id}' \; list-panes -s -t "$TMUX_PANE" -F "$FMT")
     read -r width height panes visible focused window_width window_id <<<"${tmux_out[0]:-}"
+    # tmux resizes panes in proportion when a window changes size: put the sidebar back
+    if [ "$visible" = 1 ] && [ "$width" != "$WIDTH" ] && [ "${window_width:-0}" -ge $((WIDTH * 2)) ]; then
+      tmux resize-pane -t "$TMUX_PANE" -x "$WIDTH" && width=$WIDTH
+    fi
     # Keyboard mode (and typing a filter) ends when you click or move away from the sidebar
     [ "$focused" = 1 ] || { nav=0; filter_typing=0; }
     load_issue_rows
@@ -546,6 +555,15 @@ render() {
           b_text+=("${cal_lines[i]}") b_click+=("")
         done
       fi
+      # On a short pane the issues give up rows first, so the tree keeps at least 3 (block:
+      # rule and blank lines, header, a filter line, the issues, the cache line)
+      local tree_want=${#tree_text[@]} filter_row=0
+      [ "$tree_want" -le 3 ] || tree_want=3
+      { [ "$filter_typing" = 1 ] || [ -n "$issue_filter" ]; } && filter_row=1
+      issue_rows_vis=$((height - 2 - ${#b_text[@]} - 3 - 1 - filter_row - 1 - 2 - 1 - tree_want))
+      [ "$issue_rows_vis" -le "$ISSUES_ROWS" ] || issue_rows_vis=$ISSUES_ROWS
+      [ "$issue_rows_vis" -ge 1 ] || issue_rows_vis=1
+      issue_scroll 0
       issue_lines "$width"
       if [ ${#issue_lines[@]} -gt 0 ]; then
         b_text+=("" "$rule" "") b_click+=("" "" "")
@@ -564,7 +582,7 @@ render() {
       # it does not fit, it scrolls (mouse wheel), and keyboard mode keeps its selection in view
       local tree_total=${#tree_text[@]} tree_rows
       tree_rows=$((height - 2 - ${#b_text[@]} - 2 - 1))
-      [ "$tree_rows" -ge 3 ] || tree_rows=3
+      [ "$tree_rows" -ge 1 ] || tree_rows=1
       [ "$tree_rows" -le "$tree_total" ] || tree_rows=$tree_total
       if [ "$nav" = 1 ] && [ "$nav_target" != "$nav_seen" ]; then
         for i in "${!tree_click[@]}"; do
@@ -730,7 +748,7 @@ render() {
               ;;
             $'\x14') # prefix i (claude-sidebar focus issues): keyboard into the issue list
               nav=1
-              [ "$issue_sel" -ge "$issue_offset" ] && [ "$issue_sel" -lt $((issue_offset + ISSUES_ROWS)) ] || issue_sel=$issue_offset
+              [ "$issue_sel" -ge "$issue_offset" ] && [ "$issue_sel" -lt $((issue_offset + issue_rows_vis)) ] || issue_sel=$issue_offset
               [ "$issue_total" -gt 0 ] && nav_select_issue "$issue_sel"
               ;;
             $'\x05') # prefix e (claude-sidebar focus sidebar): keyboard into the sidebar,
