@@ -14,6 +14,7 @@
 #   ↑/↓      previous/next issue in the sidebar's list (the sidebar follows)
 #   j/k scroll · space/b page · g/G top/bottom
 #   o        open in the browser (and close)
+#   s        copy the issue's link to the clipboard (share)
 #   c        start Claude Code in a new pane of <window>, in the repo's local clone,
 #            with a prompt to branch off and implement/fix the issue (and close)
 #   v        view the images full size (sixel, in a window: tmux shows no sixel in popups)
@@ -190,6 +191,15 @@ fetch_images() { # <owner/repo> <width> <base>
     -e 's/^!\[([^]]*)\]\(([^) ]+)\)$/\1\t\2/' \
     -e '/^<img/{ s/.*alt="([^"]*)".*src="([^"]+)".*/\1\t\2/; s/.*src="([^"]+)".*alt="([^"]*)".*/\2\t\1/; s/^<img .*src="([^"]+)".*/\t\1/ }')
   echo "$n" >"$base.images"
+}
+
+# The Windows clipboard under WSL, else Wayland; tmux's own buffer as well, so prefix ]
+# pastes it too
+copy_to_clipboard() { # <text>
+  tmux set-buffer -- "$1"
+  if command -v clip.exe >/dev/null; then printf '%s' "$1" | clip.exe
+  elif command -v wl-copy >/dev/null; then printf '%s' "$1" | wl-copy
+  fi
 }
 
 drop_cached() { rm -f "$VIEW_CACHE/${1//\//_}_$2_w"*; } # <owner/repo> <number>
@@ -526,7 +536,7 @@ view() {
     at=$(position)
     local vhint=
     [ "$(cat "$base.images" 2>/dev/null || echo 0)" -gt 0 ] && vhint="${KEY}v${DIM} images · "
-    local footer=" ${KEY}↑/↓${DIM} issue ${at:-–} · ${vhint}${KEY}o${DIM} browser · ${KEY}c${DIM} Claude Code · ${KEY}x${DIM} close issue · ${KEY}⌫${DIM} back · ${KEY}j/k${DIM} scroll$pos"
+    local footer=" ${KEY}↑/↓${DIM} issue ${at:-–} · ${vhint}${KEY}o${DIM} browser · ${KEY}s${DIM} copy link · ${KEY}c${DIM} Claude Code · ${KEY}x${DIM} close issue · ${KEY}⌫${DIM} back · ${KEY}j/k${DIM} scroll$pos"
     [ -n "$message" ] && footer=" ${WARN}${message}${RESET}"
     [ "$confirm" = 1 ] && footer=" ${WARN}Close $repo#$num?${RESET}  ${KEY}y${DIM} completed · ${KEY}n${DIM} not planned · ${KEY}esc${DIM} cancel"
     # Only when something changed: the loop wakes every second, and repainting an unchanged
@@ -578,6 +588,13 @@ view() {
       b | $'\e[5~') top=$((top - body + 1)) ;;
       g) top=0 ;;
       G) top=$last ;;
+      s)
+        if copy_to_clipboard "https://github.com/$repo/issues/$num" 2>/dev/null; then
+          message="Copied https://github.com/$repo/issues/$num"
+        else
+          message="Could not copy the link"
+        fi
+        ;;
       o)
         open_in_browser "https://github.com/$repo/issues/$num"
         exit 0
