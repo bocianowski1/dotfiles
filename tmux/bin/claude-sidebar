@@ -372,7 +372,7 @@ issue_prefetch_selected() { issue_url_at "$issue_sel"; issue_prefetch "$issue_ur
 # How long fetched issues are cached (minutes, used by claude-issue); click or "t" cycles it
 ISSUE_TTL_FILE=~/.config/claude-sidebar/issue-ttl
 # How long a session counts as having answered recently (orange dot); a click on the
-# header's "●15m" cycles it
+# header's "● 15m" cycles it
 RECENT_FILE=~/.config/claude-sidebar/recent-minutes
 MINUTE_STEPS=(5 15 30 60) # the values a click cycles through, for both settings
 
@@ -618,10 +618,10 @@ render() {
         for i in "${tree_click[@]}"; do [[ $i == @* ]] && n=$((n + 1)); done
         title=" Windows ($n)"
       fi
-      # "●15m": how long the orange "answered recently" dot lasts; a click changes it
-      local recent_plain="●${recent_minutes}m${more:+ $more}" gap
+      # "● 15m": how long the orange "answered recently" dot lasts; a click changes it
+      local recent_plain="● ${recent_minutes}m${more:+ $more}" gap
       printf -v gap '%*s' $((width - ${#title} - ${#recent_plain} - 1)) ''
-      head="$BOLD$title$RESET$gap$ESC[38;5;214m●$RESET$DIM${recent_minutes}m${more:+ $more}$RESET"
+      head="$BOLD$title$RESET$gap$ESC[38;5;214m●$RESET$DIM ${recent_minutes}m${more:+ $more}$RESET"
       out="$head${ESC}[K"$'\n'"${ESC}[K"$'\n'
       click[1]=recent
       tree_top=3
