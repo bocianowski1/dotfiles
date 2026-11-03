@@ -38,7 +38,7 @@ export GH_PAGER=cat
 # Local clone of owner/repo under CODE_DIR: real clones only (a worktree's .git is a file),
 # matched on the origin remote, preferring the folder named after the repo
 find_clone() {
-  local want=${1,,} name=${1##*/} best= dir remote
+  local want=${1,,} name=${1##*/} best='' dir remote
   while IFS= read -r dir; do
     remote=$(git -C "$dir" remote get-url origin 2>/dev/null) || continue
     remote=${remote,,}
@@ -118,7 +118,7 @@ EOF
 # (drawn), <base>.img<N>.name, and <base>.images once all are done (holding the count).
 # gh formats for a width, so the width is part of the key.
 # CACHE_FORMAT changes when what is cached changes, so older cache files are not trusted
-CACHE_FORMAT=3 # 2: .meta carries the body (for images); 3: keeps the originals (.src)
+CACHE_FORMAT=3                                                        # 2: .meta carries the body (for images); 3: keeps the originals (.src)
 cache_base() { echo "$VIEW_CACHE/${1//\//_}_$2_w$3_v$CACHE_FORMAT"; } # <owner/repo> <number> <width>
 
 cache_fresh() { # <base>: fetched less than ISSUE_TTL_FILE's minutes ago
@@ -206,16 +206,20 @@ fetch_images() { # <owner/repo> <width> <base>
 # pastes it too
 copy_to_clipboard() { # <text>
   tmux set-buffer -- "$1"
-  if command -v clip.exe >/dev/null; then printf '%s' "$1" | clip.exe
-  elif command -v wl-copy >/dev/null; then printf '%s' "$1" | wl-copy
+  if command -v clip.exe >/dev/null; then
+    printf '%s' "$1" | clip.exe
+  elif command -v wl-copy >/dev/null; then
+    printf '%s' "$1" | wl-copy
   fi
 }
 
 drop_cached() { rm -f "$VIEW_CACHE/${1//\//_}_$2_w"*; } # <owner/repo> <number>
 
 open_in_browser() {
-  if command -v explorer.exe >/dev/null; then explorer.exe "$1" >/dev/null 2>&1
-  elif command -v xdg-open >/dev/null; then xdg-open "$1" >/dev/null 2>&1 &
+  if command -v explorer.exe >/dev/null; then
+    explorer.exe "$1" >/dev/null 2>&1
+  elif command -v xdg-open >/dev/null; then
+    xdg-open "$1" >/dev/null 2>&1 &
   fi
   # The sidebar refetches its issues when you come back to the terminal
   tmux set -g @claude_issues_dirty 1
@@ -242,7 +246,7 @@ close_issue() { # <owner/repo> <number> <completed|not planned>
 # The GitHub half of close_issue; undoes the optimistic update if GitHub says no.
 # CLAUDE_ISSUE_DRYRUN=1 skips the call (succeeds); CLAUDE_ISSUE_FAIL=1 fakes a failure.
 close_on_github() { # <owner/repo> <number> <reason> <cache row>
-  local repo=$1 num=$2 reason=$3 row=$4 url="https://github.com/$1/issues/$2" err= here
+  local repo=$1 num=$2 reason=$3 row=$4 url="https://github.com/$1/issues/$2" err='' here
   here=$(dirname "$(readlink -f "$0")")
   if [ "${CLAUDE_ISSUE_FAIL:-}" = 1 ]; then
     err="simulated failure"
@@ -256,7 +260,10 @@ close_on_github() { # <owner/repo> <number> <reason> <cache row>
       mv "$CACHE_DIR/closed.tsv.tmp" "$CACHE_DIR/closed.tsv"
   fi
   if [ -n "$row" ]; then
-    { printf '%s\n' "$row"; cat "$CACHE_DIR/issues.tsv" 2>/dev/null; } >"$CACHE_DIR/issues.tsv.tmp" &&
+    {
+      printf '%s\n' "$row"
+      cat "$CACHE_DIR/issues.tsv" 2>/dev/null
+    } >"$CACHE_DIR/issues.tsv.tmp" &&
       mv "$CACHE_DIR/issues.tsv.tmp" "$CACHE_DIR/issues.tsv"
     chmod 600 "$CACHE_DIR/issues.tsv"
   fi
@@ -277,22 +284,22 @@ open_popup() { # <url> <window>
 images() { # <url> <base> <n> <window>
   local url=$1 base=$2 n=$3 window=$4 total key k
   local ESC=$'\e'
-  local DIM="$ESC[38;5;245m" KEY="$ESC[38;5;215m" RESET="$ESC[0m"
+  local DIM="${ESC}[38;5;245m" KEY="${ESC}[38;5;215m" RESET="${ESC}[0m"
   total=$(cat "$base.images" 2>/dev/null || echo 0)
   trap 'printf "\e[?25h"; stty echo 2>/dev/null' EXIT # (literal: locals are gone by then)
   stty -echo 2>/dev/null
-  printf '%s' "$ESC[?25l"
+  printf '%s' "${ESC}[?25l"
   while true; do
     local cols rows cw ch name six
     read -r cols rows cw ch < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{client_cell_width} #{client_cell_height}')
     name=$(cat "$base.img$n.name" 2>/dev/null)
-    printf '%s' "$ESC[2J$ESC[H ${KEY}▣${RESET} $name  ${DIM}($n/$total)${RESET}"
-    printf '%s' "$ESC[$rows;1H ${KEY}←/→${DIM} image · ${KEY}⌫${DIM} back to the issue${RESET}"
-    printf '%s' "$ESC[3;3H"
+    printf '%s' "${ESC}[2J${ESC}[H ${KEY}▣${RESET} $name  ${DIM}($n/$total)${RESET}"
+    printf '%s' "${ESC}[$rows;1H ${KEY}←/→${DIM} image · ${KEY}⌫${DIM} back to the issue${RESET}"
+    printf '%s' "${ESC}[3;3H"
     # Fit inside the window (between the title and the footer); drawn once per size
     six="$base.img$n.${cols}x${rows}.six"
     if [ ! -s "$six" ] && [ -f "$base.img$n.src" ]; then
-      printf '%s' "${DIM}drawing…${RESET}$ESC[3;3H"
+      printf '%s' "${DIM}drawing…${RESET}${ESC}[3;3H"
       "$(dirname "$(readlink -f "$0")")/claude-issue-image" --sixel "$base.img$n.src" \
         $(((cols - 4) * ${cw:-10})) $(((rows - 5) * ${ch:-20})) >"$six.tmp" 2>/dev/null && mv "$six.tmp" "$six"
       chmod 600 "$six" 2>/dev/null
@@ -302,14 +309,14 @@ images() { # <url> <base> <n> <window>
     IFS= read -rsn1 -d '' key || exit 0
     while IFS= read -rsn1 -d '' -t 0.01 k; do key+=$k; done
     case $key in
-      $'\e[C' | $'\eOC' | l) [ "$n" -lt "$total" ] && n=$((n + 1)) ;;
-      $'\e[D' | $'\eOD' | h) [ "$n" -gt 1 ] && n=$((n - 1)) ;;
-      $'\x7f' | $'\b' | q | $'\e')
-        # From the server, not this pane (which goes away): close this window, then the popup
-        tmux run-shell -b "tmux kill-window -t '$TMUX_PANE'; '$(readlink -f "$0")' open '$url' '$window'"
-        sleep 5
-        exit 0
-        ;;
+    $'\e[C' | $'\eOC' | l) [ "$n" -lt "$total" ] && n=$((n + 1)) ;;
+    $'\e[D' | $'\eOD' | h) [ "$n" -gt 1 ] && n=$((n - 1)) ;;
+    $'\x7f' | $'\b' | q | $'\e')
+      # From the server, not this pane (which goes away): close this window, then the popup
+      tmux run-shell -b "tmux kill-window -t '$TMUX_PANE'; '$(readlink -f "$0")' open '$url' '$window'"
+      sleep 5
+      exit 0
+      ;;
     esac
   done
 }
@@ -321,7 +328,7 @@ images() { # <url> <base> <n> <window>
 REPOS_CACHE=$CACHE_DIR/repos.txt
 refresh_repo_list() {
   local owners
-  owners=$( { sed -E 's#https://github\.com/([^/]+)/.*#\1#' <(cut -f5 "$CACHE_DIR/issues.tsv" 2>/dev/null); } | sort -u)
+  owners=$({ sed -E 's#https://github\.com/([^/]+)/.*#\1#' <(cut -f5 "$CACHE_DIR/issues.tsv" 2>/dev/null); } | sort -u)
   [ -n "$owners" ] || return 0
   local o
   for o in $owners; do
@@ -351,7 +358,10 @@ remember_created() { # <url> <title>
   repo=${BASH_REMATCH[1]} num=${BASH_REMATCH[2]}
   row=$(printf '%s\t%s\t0\t%s\t%s' "$repo" "$num" "${title//$'\t'/ }" "$url")
   printf '%s\t%s\n' "$(date +%s)" "$row" >>"$CACHE_DIR/created.tsv"
-  { printf '%s\n' "$row"; cat "$CACHE_DIR/issues.tsv" 2>/dev/null; } >"$CACHE_DIR/issues.tsv.tmp" &&
+  {
+    printf '%s\n' "$row"
+    cat "$CACHE_DIR/issues.tsv" 2>/dev/null
+  } >"$CACHE_DIR/issues.tsv.tmp" &&
     mv "$CACHE_DIR/issues.tsv.tmp" "$CACHE_DIR/issues.tsv"
   chmod 600 "$CACHE_DIR/issues.tsv"
   tmux set -g @claude_issue_selected "$url"
@@ -365,7 +375,7 @@ remember_created() { # <url> <title>
 new_issue() { # <window>
   local window=$1
   local ESC=$'\e'
-  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m" KEY="$ESC[38;5;215m" WARN="$ESC[38;5;214m" SEL="$ESC[48;5;238m"
+  local RESET="${ESC}[0m" BOLD="${ESC}[1m" DIM="${ESC}[38;5;245m" KEY="${ESC}[38;5;215m" WARN="${ESC}[38;5;214m" SEL="${ESC}[48;5;238m"
   trap 'printf "\e[?25h"; stty echo 2>/dev/null' EXIT # (literal: locals are gone by then)
   mkdir -p "$CACHE_DIR"
   # A day-old (or missing) org listing is refreshed while you pick
@@ -374,10 +384,10 @@ new_issue() { # <window>
   fi
 
   # 1. Repo: type to filter, ↑/↓ (or ctrl-n/p) to move, Enter to pick
-  local all=() shown=() filter= sel=0 key k repo
+  local all=() shown=() filter='' sel=0 key k repo
   mapfile -t all < <(repo_choices)
   stty -echo 2>/dev/null
-  printf '%s' "$ESC[?25l"
+  printf '%s' "${ESC}[?25l"
   while true; do
     # pick up the org listing once the background refresh lands
     [ ${#all[@]} -gt 0 ] || mapfile -t all < <(repo_choices)
@@ -389,65 +399,81 @@ new_issue() { # <window>
     local rows out i first
     rows=$(($(tput lines) - 5))
     first=$((sel >= rows ? sel - rows + 1 : 0))
-    out="$ESC[H ${BOLD}New issue${RESET} ${DIM}— pick a repo${RESET}$ESC[K"$'\n'"$ESC[K"$'\n'
-    out+=" ${KEY}›${RESET} ${filter}${DIM}▏ type to filter${RESET}$ESC[K"$'\n'"$ESC[K"$'\n'
+    out="${ESC}[H ${BOLD}New issue${RESET} ${DIM}— pick a repo${RESET}${ESC}[K"$'\n'"${ESC}[K"$'\n'
+    out+=" ${KEY}›${RESET} ${filter}${DIM}▏ type to filter${RESET}${ESC}[K"$'\n'"${ESC}[K"$'\n'
     for ((i = first; i < first + rows; i++)); do
       if [ "$i" -lt ${#shown[@]} ]; then
-        if [ "$i" = "$sel" ]; then out+="${SEL} ${KEY}▸${RESET}${SEL} ${shown[i]}$ESC[K${RESET}"$'\n'
-        else out+="   ${shown[i]}$ESC[K"$'\n'; fi
+        if [ "$i" = "$sel" ]; then
+          out+="${SEL} ${KEY}▸${RESET}${SEL} ${shown[i]}${ESC}[K${RESET}"$'\n'
+        else out+="   ${shown[i]}${ESC}[K"$'\n'; fi
       else
-        out+="$ESC[K"$'\n'
+        out+="${ESC}[K"$'\n'
       fi
     done
-    [ ${#shown[@]} -gt 0 ] || out+="$ESC[4;1H   ${DIM}no repo matches${RESET}"
-    printf '%s' "$ESC[?2026h$out$ESC[$(tput lines);1H ${KEY}↑/↓${DIM} move · ${KEY}⏎${DIM} pick · ${KEY}esc${DIM} cancel${RESET}$ESC[K$ESC[?2026l"
+    [ ${#shown[@]} -gt 0 ] || out+="${ESC}[4;1H   ${DIM}no repo matches${RESET}"
+    printf '%s' "${ESC}[?2026h$out${ESC}[$(tput lines);1H ${KEY}↑/↓${DIM} move · ${KEY}⏎${DIM} pick · ${KEY}esc${DIM} cancel${RESET}${ESC}[K${ESC}[?2026l"
 
     IFS= read -rsn1 -d '' -t 1 key || continue
     while IFS= read -rsn1 -d '' -t 0.01 k; do key+=$k; done
     case $key in
-      $'\e[A' | $'\eOA' | $'\x10') sel=$((sel - 1)) ;;
-      $'\e[B' | $'\eOB' | $'\x0e') sel=$((sel + 1)) ;;
-      $'\n' | $'\r') [ ${#shown[@]} -gt 0 ] && { repo=${shown[sel]}; break; } ;;
-      $'\x7f' | $'\b') if [ -n "$filter" ]; then filter=${filter%?}; sel=0; else exit 0; fi ;;
-      $'\e') exit 0 ;;
-      $'\e'*) ;; # other special keys
-      *) [[ $key == [[:print:]]* ]] && { filter+=$key; sel=0; } ;;
+    $'\e[A' | $'\eOA' | $'\x10') sel=$((sel - 1)) ;;
+    $'\e[B' | $'\eOB' | $'\x0e') sel=$((sel + 1)) ;;
+    $'\n' | $'\r') [ ${#shown[@]} -gt 0 ] && {
+      repo=${shown[sel]}
+      break
+    } ;;
+    $'\x7f' | $'\b') if [ -n "$filter" ]; then
+      filter=${filter%?}
+      sel=0
+    else exit 0; fi ;;
+    $'\e') exit 0 ;;
+    $'\e'*) ;; # other special keys
+    *) [[ $key == [[:print:]]* ]] && {
+      filter+=$key
+      sel=0
+    } ;;
     esac
   done
 
   # 2. Title (readline line editing), 3. description in $EDITOR, 4. confirm
-  local title= body_file= err= url=
+  local title='' body_file='' err='' url=''
   body_file=$(mktemp "${TMPDIR:-/tmp}/claude-issue-body.XXXXXX.md")
   chmod 600 "$body_file"
   stty echo 2>/dev/null
-  printf '%s' "$ESC[?25h$ESC[2J$ESC[H ${BOLD}New issue in ${repo}${RESET}"$'\n\n'
+  printf '%s' "${ESC}[?25h${ESC}[2J${ESC}[H ${BOLD}New issue in ${repo}${RESET}"$'\n\n'
   while [ -z "${title// /}" ]; do
     IFS= read -r -e -p " Title: " title || exit 0
   done
   "${EDITOR:-nvim}" "$body_file"
   while true; do
     stty -echo 2>/dev/null
-    printf '%s' "$ESC[?25l$ESC[2J$ESC[H ${BOLD}New issue in ${repo}${RESET}"$'\n\n'" ${BOLD}${title}${RESET}"$'\n\n'
+    printf '%s' "${ESC}[?25l${ESC}[2J${ESC}[H ${BOLD}New issue in ${repo}${RESET}"$'\n\n'" ${BOLD}${title}${RESET}"$'\n\n'
     if [ -s "$body_file" ]; then sed 's/^/ /' "$body_file" | head -n $(($(tput lines) - 8)); else printf ' %s(no description)%s\n' "$DIM" "$RESET"; fi
-    printf '%s' "$ESC[$(tput lines);1H ${KEY}y${DIM} create · ${KEY}e${DIM} edit description · ${KEY}n${DIM} cancel${RESET}"
+    printf '%s' "${ESC}[$(tput lines);1H ${KEY}y${DIM} create · ${KEY}e${DIM} edit description · ${KEY}n${DIM} cancel${RESET}"
     IFS= read -rsn1 key || exit 0
     case $key in
-      y)
-        printf '%s' "$ESC[$(tput lines);1H$ESC[K ${DIM}Creating…${RESET}"
-        if url=$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" 2>"$body_file.err"); then
-          url=$(grep -o 'https://github\.com/[^ ]*/issues/[0-9]*' <<<"$url" | tail -1)
-          rm -f "$body_file" "$body_file.err"
-          remember_created "$url" "$title"
-          # Show the new issue in the popup
-          view "$url" "$window"
-          exit 0
-        fi
-        err=$(head -1 "$body_file.err")
-        printf '%s' "$ESC[$(tput lines);1H$ESC[K ${WARN}Could not create: ${err}${RESET}  ${DIM}(any key)${RESET}"
-        IFS= read -rsn1 key
-        ;;
-      e) stty echo 2>/dev/null; "${EDITOR:-nvim}" "$body_file" ;;
-      n | $'\e' | q) rm -f "$body_file" "$body_file.err"; exit 0 ;;
+    y)
+      printf '%s' "${ESC}[$(tput lines);1H${ESC}[K ${DIM}Creating…${RESET}"
+      if url=$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" 2>"$body_file.err"); then
+        url=$(grep -o 'https://github\.com/[^ ]*/issues/[0-9]*' <<<"$url" | tail -1)
+        rm -f "$body_file" "$body_file.err"
+        remember_created "$url" "$title"
+        # Show the new issue in the popup
+        view "$url" "$window"
+        exit 0
+      fi
+      err=$(head -1 "$body_file.err")
+      printf '%s' "${ESC}[$(tput lines);1H${ESC}[K ${WARN}Could not create: ${err}${RESET}  ${DIM}(any key)${RESET}"
+      IFS= read -rsn1 key
+      ;;
+    e)
+      stty echo 2>/dev/null
+      "${EDITOR:-nvim}" "$body_file"
+      ;;
+    n | $'\e' | q)
+      rm -f "$body_file" "$body_file.err"
+      exit 0
+      ;;
     esac
   done
 }
@@ -455,20 +481,23 @@ new_issue() { # <window>
 view() {
   local url=$1 window=$2
   local ESC=$'\e'
-  local RESET="$ESC[0m" DIM="$ESC[38;5;245m" KEY="$ESC[38;5;215m" WARN="$ESC[38;5;214m"
+  local RESET="${ESC}[0m" DIM="${ESC}[38;5;245m" KEY="${ESC}[38;5;215m" WARN="${ESC}[38;5;214m"
   trap 'printf "\e[?25h"' EXIT # (literal: locals are gone by then)
-  printf '%s' "$ESC[?25l"
+  printf '%s' "${ESC}[?25l"
 
-  local repo num width base title labels text=() lines=() shown_images= top=0
+  local repo num width base title labels text=() lines=() shown_images='' top=0
   width=$(($(tput cols) - 2))
 
   # Load <url>: gh's rendering of the issue (metadata + markdown body), sized to the popup,
   # from the cache when the sidebar prefetched it; title and labels for the branch name
   load() {
     url=$1
-    [[ $url =~ github\.com/([^/]+/[^/]+)/issues/([0-9]+) ]] || { text=("Not an issue url: $url"); return; }
-    repo=${BASH_REMATCH[1]} num=${BASH_REMATCH[2]} top=0 title= labels= shown_images=
-    printf '%s' "$ESC[2J$ESC[H${DIM} Loading $repo#$num…$RESET"
+    [[ $url =~ github\.com/([^/]+/[^/]+)/issues/([0-9]+) ]] || {
+      text=("Not an issue url: $url")
+      return
+    }
+    repo=${BASH_REMATCH[1]} num=${BASH_REMATCH[2]} top=0 title='' labels='' shown_images=''
+    printf '%s' "${ESC}[2J${ESC}[H${DIM} Loading $repo#$num…$RESET"
     last_frame=
     fetch_issue "$repo" "$num" "$width" wait
     base=$(cache_base "$repo" "$num" "$width")
@@ -502,7 +531,7 @@ view() {
 
   # text + the images, placed above gh's closing "View this issue on GitHub" line
   compose() {
-    local state=done
+    local state='done'
     [ -f "$base.images" ] || state=loading
     local have
     have="$state $(ls "$base".img[0-9]*.txt 2>/dev/null | wc -l)"
@@ -510,7 +539,10 @@ view() {
     shown_images=$have
     local i at=${#text[@]} n f
     for ((i = ${#text[@]} - 1; i >= 0; i--)); do
-      [[ ${text[i]} == *"View this issue on GitHub"* ]] && { at=$i; break; }
+      [[ ${text[i]} == *"View this issue on GitHub"* ]] && {
+        at=$i
+        break
+      }
     done
     local images=()
     for ((n = 1; n <= IMAGE_MAX; n++)); do
@@ -526,11 +558,11 @@ view() {
   }
 
   load "$url"
-  local message= confirm=0 key k
+  local message='' confirm=0 key k
   local last_frame=
   while true; do
     compose
-    local rows body last out= i
+    local rows body last out='' i
     rows=$(tput lines)
     body=$((rows - 2))
     last=$((${#lines[@]} - body))
@@ -538,9 +570,9 @@ view() {
     [ "$top" -le "$last" ] || top=$last
     [ "$top" -ge 0 ] || top=0
     for ((i = top; i < top + body; i++)); do
-      out+=" ${lines[i]:-}$RESET$ESC[K"$'\n'
+      out+=" ${lines[i]:-}$RESET${ESC}[K"$'\n'
     done
-    local pos= at
+    local pos='' at
     [ ${#lines[@]} -gt "$body" ] && pos="  ${DIM}line $((top + 1))/${#lines[@]}"
     at=$(position)
     local vhint=
@@ -550,9 +582,9 @@ view() {
     [ "$confirm" = 1 ] && footer=" ${WARN}Close $repo#$num?${RESET}  ${KEY}y${DIM} completed · ${KEY}n${DIM} not planned · ${KEY}esc${DIM} cancel"
     # Only when something changed: the loop wakes every second, and repainting an unchanged
     # popup made it (and the sidebar under it) flicker
-    local frame="$out$ESC[K"$'\n'"$footer$RESET$ESC[K"
+    local frame="$out${ESC}[K"$'\n'"$footer$RESET${ESC}[K"
     if [ "$frame" != "$last_frame" ]; then
-      printf '%s' "$ESC[?2026h$ESC[H$frame$ESC[?2026l"
+      printf '%s' "${ESC}[?2026h${ESC}[H$frame${ESC}[?2026l"
       last_frame=$frame
     fi
 
@@ -564,52 +596,52 @@ view() {
     if [ "$confirm" = 1 ]; then
       confirm=0
       case $key in
-        y)
-          close_issue "$repo" "$num" completed
-          exit 0
-          ;;
-        n)
-          close_issue "$repo" "$num" "not planned"
-          exit 0
-          ;;
+      y)
+        close_issue "$repo" "$num" completed
+        exit 0
+        ;;
+      n)
+        close_issue "$repo" "$num" "not planned"
+        exit 0
+        ;;
       esac
       continue # anything else cancels
     fi
     case $key in
-      $'\e[A' | $'\eOA' | $'\e[B' | $'\eOB')
-        local next
-        if [[ $key == *A ]]; then next=$(neighbour -1); else next=$(neighbour 1); fi
-        if [ -n "$next" ]; then load "$next"; else message="No more issues that way"; fi
-        ;;
-      v)
-        local count
-        count=$(cat "$base.images" 2>/dev/null || echo 0)
-        if [ "$count" -gt 0 ]; then
-          tmux new-window -n issue-image "'$(readlink -f "$0")' images '$url' '$base' 1 '$window'"
-          exit 0
-        fi
-        message="No images in this issue"
-        ;;
-      x) confirm=1 ;;
-      j) top=$((top + 1)) ;;
-      k) top=$((top - 1)) ;;
-      ' ' | $'\e[6~') top=$((top + body - 1)) ;;
-      b | $'\e[5~') top=$((top - body + 1)) ;;
-      g) top=0 ;;
-      G) top=$last ;;
-      s)
-        if copy_to_clipboard "https://github.com/$repo/issues/$num" 2>/dev/null; then
-          message="Copied https://github.com/$repo/issues/$num"
-        else
-          message="Could not copy the link"
-        fi
-        ;;
-      o)
-        open_in_browser "https://github.com/$repo/issues/$num"
+    $'\e[A' | $'\eOA' | $'\e[B' | $'\eOB')
+      local next
+      if [[ $key == *A ]]; then next=$(neighbour -1); else next=$(neighbour 1); fi
+      if [ -n "$next" ]; then load "$next"; else message="No more issues that way"; fi
+      ;;
+    v)
+      local count
+      count=$(cat "$base.images" 2>/dev/null || echo 0)
+      if [ "$count" -gt 0 ]; then
+        tmux new-window -n issue-image "'$(readlink -f "$0")' images '$url' '$base' 1 '$window'"
         exit 0
-        ;;
-      c) start_claude "$repo" "$num" "$title" "$labels" "https://github.com/$repo/issues/$num" "$window" && exit 0 ;;
-      $'\x7f' | $'\b' | q | $'\e') exit 0 ;;
+      fi
+      message="No images in this issue"
+      ;;
+    x) confirm=1 ;;
+    j) top=$((top + 1)) ;;
+    k) top=$((top - 1)) ;;
+    ' ' | $'\e[6~') top=$((top + body - 1)) ;;
+    b | $'\e[5~') top=$((top - body + 1)) ;;
+    g) top=0 ;;
+    G) top=$last ;;
+    s)
+      if copy_to_clipboard "https://github.com/$repo/issues/$num" 2>/dev/null; then
+        message="Copied https://github.com/$repo/issues/$num"
+      else
+        message="Could not copy the link"
+      fi
+      ;;
+    o)
+      open_in_browser "https://github.com/$repo/issues/$num"
+      exit 0
+      ;;
+    c) start_claude "$repo" "$num" "$title" "$labels" "https://github.com/$repo/issues/$num" "$window" && exit 0 ;;
+    $'\x7f' | $'\b' | q | $'\e') exit 0 ;;
     esac
   done
 }

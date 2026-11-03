@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154 # render's state, shared by the sidebar files (render.sh)
 # The issue block: your open GitHub issues (claude-issues fetches them into ISSUES_CACHE),
 # a scrolled window of them, and the issue popup (claude-issue) they open.
 ISSUES_CACHE=$CACHE_DIR/issues.tsv
@@ -51,7 +52,7 @@ issue_index_of() { # <url>
 # session works on (issue_session).
 issue_lines() { # <width>
   local width=$1 ESC=$'\e'
-  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m" MINE="$ESC[38;5;214m" KEYC="$ESC[38;5;215m"
+  local RESET="${ESC}[0m" BOLD="${ESC}[1m" DIM="${ESC}[38;5;245m" MINE="${ESC}[38;5;214m" KEYC="${ESC}[38;5;215m"
   local offset=$issue_offset
   issue_lines=() issue_urls=()
   command -v gh >/dev/null || return
@@ -82,7 +83,7 @@ issue_lines() { # <width>
     [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
     dot=' ' has=' '
     [ "$mine" = 1 ] && dot="${MINE}●${RESET}"
-    [ -n "${issue_session[$url]:-}" ] && has="$ESC[38;5;110m◆${RESET}"
+    [ -n "${issue_session[$url]:-}" ] && has="${ESC}[38;5;110m◆${RESET}"
     issue_lines+=(" $has$dot ${DIM}${ref}${RESET} $title") issue_urls+=("$url")
   done
   local minutes

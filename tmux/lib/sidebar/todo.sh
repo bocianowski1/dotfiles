@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154 # render's state, shared by the sidebar files (render.sh)
 # The todo block: open items of TODO_FILE ("- [ ] ..." lines), ticked off by a click.
 TODO_FILE=$CONFIG_DIR/todo.md
 TODO_ROWS=5 # items visible at once; the mouse wheel (or j/k) scrolls through the rest
@@ -8,7 +9,7 @@ TODO_ROWS=5 # items visible at once; the mouse wheel (or j/k) scrolls through th
 # header, into todo_lines / todo_refs. Keeps a keyboard selection on a todo in view.
 todo_lines() { # <width>
   local width=$1 ESC=$'\e'
-  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
+  local RESET="${ESC}[0m" BOLD="${ESC}[1m" DIM="${ESC}[38;5;245m"
   todo_lines=() todo_refs=() todo_all=() todo_all_refs=()
 
   local lineno=0 text max=$((width - 5))

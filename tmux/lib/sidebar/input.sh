@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154 # render's state, shared by the sidebar files (render.sh)
 # Input: wait up to 2s (a minute when hidden) for keys and mouse reports, then act on them.
 # `claude-sidebar refresh` wakes a sidebar early by typing C-r into its pane. Works on
 # render's locals.

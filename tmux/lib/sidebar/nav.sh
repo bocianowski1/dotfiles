@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154 # render's state, shared by the sidebar files (render.sh)
 # Clicks and keyboard mode (prefix e, prefix i). These work on render's locals. A row's
 # click target is a string: "@window", "%pane", "issue:<url>", "todo:<line>", "todo-edit",
 # "ttl", "recent" or "filter". In keyboard mode the selection, nav_target, is one of them,

@@ -44,14 +44,14 @@ args=()
 i=0
 while IFS=$'\t' read -r state pane target name path; do
   case $state in
-    attention) dot='#[fg=colour203,bold]● needs you#[default]' ;;
-    running)   dot='#[fg=colour114]● running  #[default]' ;;
-    *)         dot='#[fg=colour245]● idle     #[default]' ;;
+  attention) dot='#[fg=colour203,bold]● needs you#[default]' ;;
+  running) dot='#[fg=colour114]● running  #[default]' ;;
+  *) dot='#[fg=colour245]● idle     #[default]' ;;
   esac
   path=${path/#$HOME/\~}
   label=$(printf '%s  %-6s %-14s %s' "$dot" "$target" "$name" "$path")
   args+=("$label" "${keys[i]:-}" "switch-client -t '$pane'")
   i=$((i + 1))
-done <<< "$rows"
+done <<<"$rows"
 
 tmux display-menu ${client:+-c "$client"} -T '#[align=centre] Claude Code ' -x C -y C "${args[@]}"

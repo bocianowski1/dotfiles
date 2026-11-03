@@ -4,10 +4,11 @@
 # shellcheck disable=SC2034 # (the scripts that source this use these)
 CONFIG_DIR=~/.config/claude-sidebar
 CACHE_DIR=${CLAUDE_SIDEBAR_CACHE:-~/.cache/claude-sidebar} # CLAUDE_SIDEBAR_CACHE: tests
-GH_USER=torgermalling # issues are always this login's, whichever gh account is active
+# Issues are always this login's, whichever gh account is active
+GH_USER=torgermalling
 
 # Settings in minutes, each a number in its own file; a click in the sidebar cycles them
-ISSUE_TTL_FILE=$CONFIG_DIR/issue-ttl  # how long a fetched issue is cached (claude-issue)
+ISSUE_TTL_FILE=$CONFIG_DIR/issue-ttl   # how long a fetched issue is cached (claude-issue)
 RECENT_FILE=$CONFIG_DIR/recent-minutes # how long a session that answered stays orange
 MINUTE_STEPS=(5 15 30 60)              # the values a click cycles through
 

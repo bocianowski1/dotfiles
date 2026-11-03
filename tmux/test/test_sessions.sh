@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Claude sessions: the state hook (claude-tmux-state) and prefix g (claude-sessions next).
 
 test_state_hook_records_replies() {
@@ -17,8 +18,7 @@ test_state_hook_records_replies() {
 
 test_prefix_g_order() {
   start_tmux 120 30
-  local now=$EPOCHSECONDS w plain newest red older old
-  w=$(first_window)
+  local now=$EPOCHSECONDS plain newest red older old
   plain=$(add_session "$(add_window)" "no answer yet" idle)
   newest=$(add_session "$(add_window)" "newest" idle $((now - 60)))
   red=$(add_session "$(add_window)" "waiting" attention)
@@ -26,15 +26,15 @@ test_prefix_g_order() {
   old=$(add_session "$(add_window)" "too old" idle $((now - 3600)))
   # switch-client needs a client: attach one on a pseudo-terminal
   script -qfc "tmux -L $SOCK attach -t main" /dev/null >/dev/null 2>&1 &
-  local client= i
-  for i in $(seq 50); do
+  local client=''
+  for _ in $(seq 50); do
     client=$(tm list-clients -F '#{client_name}' | head -1)
     [ -n "$client" ] && break
     sleep 0.1
   done
   [ -n "$client" ] || fail "no client attached"
   local seen=()
-  for i in 1 2 3 4; do
+  for _ in 1 2 3 4; do
     "$BIN/claude-sessions" next "$client" "$(tm display -p -c "$client" '#{pane_id}')"
     seen+=("$(tm display -p -c "$client" '#{pane_id}')")
   done

@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154 # render's state, shared by the sidebar files (render.sh)
 # The calendar block: today's and tomorrow's meetings, else the next one this week.
 # claude-calendar fetches the meetings into CALENDAR_CACHE.
 CALENDAR_URL_FILE=$CONFIG_DIR/calendar-url
@@ -9,7 +10,7 @@ CALENDAR_MAX=5                                      # meetings shown
 # join link for each line into cal_urls)
 calendar_lines() { # <width> <now epoch>
   local width=$1 now=$2 ESC=$'\e'
-  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
+  local RESET="${ESC}[0m" BOLD="${ESC}[1m" DIM="${ESC}[38;5;245m"
   cal_lines=() cal_urls=()
   [ -f "$CALENDAR_URL_FILE" ] || return
   local today tomorrow wday k d start end title url
@@ -73,10 +74,10 @@ calendar_meeting() { # <cache row>
   IFS=$'\t' read -r start end title url <<<"$1"
   mins=$(((start - now + 59) / 60))
   if [ "$start" -le "$now" ]; then
-    tag=now tagc="$ESC[38;5;114m"
+    tag=now tagc="${ESC}[38;5;114m"
   elif [ "$mins" -le 60 ]; then
     tag="in ${mins}m"
-    [ "$mins" -le 10 ] && tagc="$ESC[1;38;5;214m"
+    [ "$mins" -le 10 ] && tagc="${ESC}[1;38;5;214m"
   fi
   printf -v hhmm '%(%H:%M)T' "$start"
   [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"

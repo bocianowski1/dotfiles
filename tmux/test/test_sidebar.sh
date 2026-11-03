@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The sidebar as you see it: a real sidebar in a test tmux server, read off its screen.
 # shellcheck disable=SC2034 # (variables the helpers read)
 

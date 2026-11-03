@@ -1,5 +1,6 @@
+# shellcheck shell=bash
 # Single functions, sourced from tmux/lib and the scripts, with fixed inputs.
-# shellcheck disable=SC2034 # (variables the functions under test read)
+# shellcheck disable=SC2034,SC2154 # (variables the functions under test read and set)
 
 load_sidebar() { # <parts...>
   self=$BIN/claude-sidebar

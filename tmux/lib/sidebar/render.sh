@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154 # render's state, shared by the sidebar files (render.sh)
 # The draw loop running inside each sidebar pane: read the state from tmux, draw a frame
 # (only the sidebar you can see), wait for input or a redraw request, repeat.
 # render's locals are the sidebar's state; the other sidebar files work on them.
@@ -15,7 +16,7 @@ render() {
   host=$(hostname)
   continuum=~/.tmux/plugins/tmux-continuum/scripts/continuum_save.sh
   # Hide the cursor; ask for SGR mouse reports of clicks and of movement (for hover prefetch)
-  trap 'printf "%s" "$ESC[?1003l$ESC[?1000l$ESC[?1006l$ESC[?25h$ESC[?7h"; stty echo 2>/dev/null' EXIT
+  trap 'printf "%s" "${ESC}[?1003l${ESC}[?1000l${ESC}[?1006l${ESC}[?25h${ESC}[?7h"; stty echo 2>/dev/null' EXIT
   # Echo off for good, not just while read waits: mouse movement arriving while the sidebar
   # is busy (e.g. starting a prefetch) was otherwise echoed as ^[[<35;… after the footer
   stty -echo 2>/dev/null
@@ -23,7 +24,7 @@ render() {
   # flashed all sidebars whenever they restarted, e.g. on a script change)
   # Autowrap off: a line too long for the pane is cut instead of wrapping onto another row,
   # which pushed the top of the frame out of the pane
-  printf '%s' "$ESC[?25l$ESC[?7l$ESC[?1000h$ESC[?1003h$ESC[?1006h"
+  printf '%s' "${ESC}[?25l${ESC}[?7l${ESC}[?1000h${ESC}[?1003h${ESC}[?1006h"
 
   local -A click=()         # screen row → click target (see nav.sh)
   local -A issue_session=() # issue url → 1 when a Claude session works on it
@@ -104,7 +105,7 @@ read_state() {
 # and issue blocks, separated by lines. Sets click (screen row → target), the row ranges
 # the mouse wheel scrolls, and nav_order.
 compose_frame() {
-  local RESET="$ESC[0m" DIM="$ESC[38;5;245m"
+  local RESET="${ESC}[0m" DIM="${ESC}[38;5;245m"
   local out row i minutes recent_minutes
   local -a tree_text tree_click
   minutes_setting "$RECENT_FILE"
@@ -202,7 +203,7 @@ compose_frame() {
   if [ -n "$sel_row" ]; then
     local -a frame
     mapfile -t frame <<<"$out"
-    local SELBG="$ESC[48;5;238m" line=${frame[sel_row - 1]}
+    local SELBG="${ESC}[48;5;238m" line=${frame[sel_row - 1]}
     line="${line%"${ESC}[K"}"
     [ "${line:0:1}" = " " ] && line="${ESC}[38;5;215m▸${RESET}${line:1}"
     frame[sel_row - 1]="${SELBG}${line//$RESET/$RESET$SELBG}${ESC}[K${RESET}"
@@ -213,7 +214,7 @@ compose_frame() {
   # Unchanged frames are not sent again: tmux keeps the pane's contents, and every
   # redraw under an open popup made tmux repaint the popup over it (a flicker every 2s)
   if [ "$out" != "$last_frame" ]; then
-    printf '%s' "$ESC[?2026h$ESC[H$out$ESC[J$ESC[?2026l"
+    printf '%s' "${ESC}[?2026h${ESC}[H$out${ESC}[J${ESC}[?2026l"
     last_frame=$out
   fi
 }

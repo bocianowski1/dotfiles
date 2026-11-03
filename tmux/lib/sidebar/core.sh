@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # The sidebar panes themselves (one per window, on the left), and small shared helpers.
-# shellcheck disable=SC2034 # (the other sidebar files use these)
+# shellcheck disable=SC2034,SC2154 # (the other sidebar files use these; self: claude-sidebar)
 WIDTH=34
 US=$'\x1f' # field separator: not whitespace, so empty fields survive read
 # What the window tree reads of each pane, one line per pane (see tree_build)
@@ -69,7 +69,7 @@ focus_window() {
 # (prefix i): selects the sidebar pane and tells it which, by C-e or C-t
 focus_sidebar() { # [issues]
   sidebars_on || on
-  local win sb= i
+  local win sb='' i
   win=$(tmux display -p '#{window_id}')
   # A sidebar that was just opened needs a moment to mark itself
   for i in $(seq 20); do

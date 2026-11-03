@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2154 # render's state, shared by the sidebar files (render.sh)
 # The window tree at the top: each window of the session, and under it its Claude sessions
 # with a state dot. It gets the rows the bottom block leaves and scrolls when they are too
 # few. Works on render's locals (tree_offset, click, nav_*) and compose_frame's.
@@ -7,8 +8,8 @@ BLINK_SECONDS=30 # a session that just answered blinks this long
 # The whole tree from tree_panes (FMT lines) into tree_text / tree_click
 tree_build() {
   local ESC=$'\e'
-  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
-  local ACTIVE="$ESC[38;5;215m" WINDOW="$ESC[38;5;110m" MARKED="$ESC[38;5;114m"
+  local RESET="${ESC}[0m" BOLD="${ESC}[1m" DIM="${ESC}[38;5;245m"
+  local ACTIVE="${ESC}[38;5;215m" WINDOW="${ESC}[38;5;110m" MARKED="${ESC}[38;5;114m"
   local today last_win='' colour when day name room line dot marker max tag
   local wid pid widx wname wactive pactive state title path cmd sidebar opened marked replied linked
   printf -v today '%(%F)T' -1
@@ -40,17 +41,17 @@ tree_build() {
     case $title in "" | */* | "$host") title=${path##*/} ;; esac
     # red: waiting on you · green: working · orange: answered in the last recent_minutes
     case $state in
-    attention) dot="$ESC[1;38;5;203m●" ;;
-    running) dot="$ESC[38;5;114m●" ;;
+    attention) dot="${ESC}[1;38;5;203m●" ;;
+    running) dot="${ESC}[38;5;114m●" ;;
     idle)
-      dot="$ESC[38;5;245m●"
+      dot="${ESC}[38;5;245m●"
       if [ -n "$replied" ] && [ $((EPOCHSECONDS - replied)) -lt $((recent_minutes * 60)) ]; then
-        dot="$ESC[38;5;214m●"
+        dot="${ESC}[38;5;214m●"
         # Blinking at first: the terminal blinks it (SGR 5), so no redraws
-        [ $((EPOCHSECONDS - replied)) -lt "$BLINK_SECONDS" ] && dot="$ESC[5;38;5;214m●"
+        [ $((EPOCHSECONDS - replied)) -lt "$BLINK_SECONDS" ] && dot="${ESC}[5;38;5;214m●"
       fi
       ;;
-    *) dot="$ESC[38;5;240m○" ;; # Claude is running, but its hooks have not reported yet
+    *) dot="${ESC}[38;5;240m○" ;; # Claude is running, but its hooks have not reported yet
     esac
     marker=' '
     [ "$wactive$pactive" = 11 ] && marker='▸'
@@ -67,7 +68,7 @@ tree_build() {
 # most; sets click, row, tree_top and tree_bottom. Keeps a keyboard selection in view.
 tree_draw() { # <rows>
   local ESC=$'\e'
-  local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
+  local RESET="${ESC}[0m" BOLD="${ESC}[1m" DIM="${ESC}[38;5;245m"
   local total=${#tree_text[@]} rows=$1 i
   [ "$rows" -ge 1 ] || rows=1
   [ "$rows" -le "$total" ] || rows=$total
@@ -92,7 +93,7 @@ tree_draw() { # <rows>
   fi
   right="● ${recent_minutes}m${more:+ $more}"
   printf -v gap '%*s' $((width - ${#title} - ${#right} - 1)) ''
-  out="$BOLD$title$RESET$gap$ESC[38;5;214m●$RESET$DIM ${recent_minutes}m${more:+ $more}$RESET${ESC}[K"$'\n'"${ESC}[K"$'\n'
+  out="$BOLD$title$RESET$gap${ESC}[38;5;214m●$RESET$DIM ${recent_minutes}m${more:+ $more}$RESET${ESC}[K"$'\n'"${ESC}[K"$'\n'
   click[1]=recent
   row=3 tree_top=3
   for ((i = tree_offset; i < tree_offset + rows; i++)); do
