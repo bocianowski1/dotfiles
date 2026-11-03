@@ -16,7 +16,9 @@
 #   o        open in the browser (and close)
 #   s        copy the issue's link to the clipboard (share)
 #   c        start Claude Code in a new pane of <window>, in the repo's local clone,
-#            with a prompt to branch off and implement/fix the issue (and close)
+#            with a prompt to branch off and implement/fix the issue (and close); the
+#            pane remembers the issue (@claude_issue). If a session already works on
+#            the issue, c goes to it instead of starting a second one
 #   v        view the images full size (sixel, in a window: tmux shows no sixel in popups)
 #   x        close the issue on GitHub, after confirming: y completed · n not planned
 #   ⌫ q Esc  close
@@ -70,7 +72,20 @@ branch_name() { # <number> <title> <labels>
 }
 
 start_claude() { # <owner/repo> <number> <title> <labels> <url> <window>
-  local repo=$1 num=$2 title=$3 labels=$4 url=$5 window=$6 dir pane branch prompt_file
+  local repo=$1 num=$2 title=$3 labels=$4 url=$5 window=$6 dir pane branch prompt_file existing
+  # A Claude session (still running) already on this issue: go there instead
+  existing=$(tmux list-panes -a -F '#{pane_id} #{@claude_state} #{@claude_issue}' |
+    awk -v u="$url" '$2 != "" && $3 == u { print $1; exit }')
+  if [ -n "$existing" ]; then
+    if [ "${CLAUDE_ISSUE_DRYRUN:-}" = 1 ]; then
+      mkdir -p "$PROMPTS"
+      echo "existing $existing" >"$PROMPTS/dryrun.txt"
+      return 0
+    fi
+    tmux switch-client -t "$existing"
+    tmux display-message "Already a Claude session on $repo#$num: switched to it"
+    return 0
+  fi
   dir=$(find_clone "$repo") || true
   if [ -z "$dir" ]; then
     message="No local clone of $repo under ${CODE_DIR/#$HOME/\~}"
@@ -91,12 +106,14 @@ $url
 EOF
   pane=$(work_pane "$window")
   # Claude starts with the prompt; when it exits, the pane stays as a shell in the repo
-  local cmd=(tmux split-window -h -t "$pane" -c "$dir" -- bash -c 'claude "$(cat "$1")"; exec bash' _ "$prompt_file")
+  local cmd=(tmux split-window -h -P -F '#{pane_id}' -t "$pane" -c "$dir" -- bash -c 'claude "$(cat "$1")"; exec bash' _ "$prompt_file")
   if [ "${CLAUDE_ISSUE_DRYRUN:-}" = 1 ]; then
     printf '%q ' "${cmd[@]}" >"$PROMPTS/dryrun.txt"
     return 0
   fi
-  "${cmd[@]}"
+  local new
+  # The pane remembers its issue: the sidebar shows it, and c finds the session again
+  new=$("${cmd[@]}") && tmux set -p -t "$new" @claude_issue "$url"
 }
 
 ttl_minutes() {

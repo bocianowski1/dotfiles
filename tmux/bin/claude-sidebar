@@ -15,7 +15,7 @@
 WIDTH=34
 self=$(readlink -f "$0")
 US=$'\x1f' # field separator: not whitespace, so empty fields survive read
-FMT="#{window_id}${US}#{pane_id}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{pane_active}${US}#{@claude_state}${US}#{pane_title}${US}#{pane_current_path}${US}#{pane_current_command}${US}#{@claude_sidebar}${US}#{@last_opened}${US}#{@claude_marked}${US}#{@claude_replied}"
+FMT="#{window_id}${US}#{pane_id}${US}#{window_index}${US}#{window_name}${US}#{window_active}${US}#{pane_active}${US}#{@claude_state}${US}#{pane_title}${US}#{pane_current_path}${US}#{pane_current_command}${US}#{@claude_sidebar}${US}#{@last_opened}${US}#{@claude_marked}${US}#{@claude_replied}${US}#{@claude_issue}"
 
 sidebar_panes() {
   tmux list-panes -a -F '#{pane_id} #{@claude_sidebar}' | awk '$2 == "1" { print $1 }'
@@ -269,9 +269,11 @@ issue_lines() {
     ref="$repo#$num"
     max=$((width - ${#ref} - 5))
     [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
-    local dot=' '
+    local dot=' ' has=' '
     [ "$mine" = 1 ] && dot="${MINE}●${RESET}"
-    issue_lines+=("  $dot ${DIM}${ref}${RESET} $title") issue_urls+=("$url")
+    # ◆: a Claude session works on this issue (started with c in the issue popup)
+    [ -n "${issue_session[$url]:-}" ] && has="$ESC[38;5;110m◆${RESET}"
+    issue_lines+=(" $has$dot ${DIM}${ref}${RESET} $title") issue_urls+=("$url")
   done
   local issue_ttl_minutes
   issue_ttl
@@ -486,6 +488,7 @@ render() {
   local nav=0 nav_target= issue_url= window_width=0 window_id= checked_at=-99
   local last_frame= tree_offset=0 tree_top=0 tree_bottom=0 todo_offset=0 todo_top=0 todo_bottom=0 nav_seen=
   local issue_top=0 issue_bottom=-1
+  local -A issue_session=() # issue url → 1 when a Claude session works on it
   # Only follow issues the popup moves to from now on, not one it showed before we started
   followed_issue=$(tmux show -gv @claude_issue_selected 2>/dev/null)
 
@@ -498,9 +501,19 @@ render() {
       [ "$(stat -c %Y "$self")" = "$version" ] || exec "$self" render
     fi
     # This pane's size and state, then the session's panes (for the tree): one tmux call
-    local -a tmux_out
-    mapfile -t tmux_out < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active} #{window_width} #{window_id}' \; list-panes -s -t "$TMUX_PANE" -F "$FMT")
+    # and, from every session, the issues Claude sessions work on (lines starting with "I")
+    local -a tmux_out tree_panes=()
+    local l
+    mapfile -t tmux_out < <(tmux display -p -t "$TMUX_PANE" '#{pane_width} #{pane_height} #{window_panes} #{window_active} #{pane_active} #{window_width} #{window_id}' \; list-panes -s -t "$TMUX_PANE" -F "$FMT" \; list-panes -a -F 'I#{?#{&&:#{@claude_state},#{@claude_issue}},#{@claude_issue},}')
     read -r width height panes visible focused window_width window_id <<<"${tmux_out[0]:-}"
+    issue_session=()
+    for l in "${tmux_out[@]:1}"; do
+      case $l in
+      I) ;;
+      I*) issue_session[${l#I}]=1 ;;
+      *) tree_panes+=("$l") ;;
+      esac
+    done
     # tmux resizes panes in proportion when a window changes size: put the sidebar back
     if [ "$visible" = 1 ] && [ "$width" != "$WIDTH" ] && [ "${window_width:-0}" -ge $((WIDTH * 2)) ]; then
       tmux resize-pane -t "$TMUX_PANE" -x "$WIDTH" && width=$WIDTH
@@ -530,7 +543,7 @@ render() {
       click=()
       local today
       printf -v today '%(%F)T' -1
-      while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened marked replied; do
+      while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened marked replied linked; do
         if [ "$widx" != "$last_win" ]; then
           [ -n "$last_win" ] && tree_text+=("") tree_click+=("")
           local colour=$WINDOW
@@ -573,12 +586,13 @@ render() {
         esac
         local marker=' '
         [ "$wactive$pactive" = 11 ] && marker='▸'
-        local max=$((width - 7))
+        local max=$((width - 7)) tag=
+        [[ $linked =~ /issues/([0-9]+)$ ]] && tag="#${BASH_REMATCH[1]}" max=$((max - ${#tag} - 1))
         [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
         local line
-        printf -v line '  %s %-*s %s' "$marker" "$max" "$title" "$dot"
+        printf -v line '  %s %-*s %s%s' "$marker" "$max" "$title" "${tag:+$DIM$tag$RESET }" "$dot"
         tree_text+=("$line${RESET}") tree_click+=("$pid")
-      done < <(printf '%s\n' "${tmux_out[@]:1}")
+      done < <(printf '%s\n' "${tree_panes[@]}")
 
       # Bottom block, pinned above the footer: todo, calendar and issues, separated by lines.
       # Built as (text, click target) pairs first so the padding above it can be measured.
