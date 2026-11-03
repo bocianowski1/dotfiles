@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034 # (the tests use these)
 # Helpers for the tmux sidebar tests (sourced by run). Each test gets its own tmux server
 # and its own HOME, so nothing touches your real tmux, todos, calendar or GitHub:
 #   start_tmux <cols> <rows>     a detached server with one session ("main")
@@ -22,7 +24,10 @@ setup() {
   # A gh that always fails: the sidebar shows issues when gh exists, but must never call it
   mkdir -p "$T_HOME/bin" "$T_HOME/.config/claude-sidebar" "$T_HOME/.cache/claude-sidebar"
   printf '#!/bin/sh\nexit 1\n' >"$T_HOME/bin/gh"
-  chmod +x "$T_HOME/bin/gh"
+  # The clipboard goes to a file, not to yours
+  printf '#!/bin/sh\ncat >"$HOME/clipboard"\n' >"$T_HOME/bin/clip.exe"
+  cp "$T_HOME/bin/clip.exe" "$T_HOME/bin/wl-copy"
+  chmod +x "$T_HOME/bin/gh" "$T_HOME/bin/clip.exe" "$T_HOME/bin/wl-copy"
   export HOME=$T_HOME PATH="$T_HOME/bin:$PATH" CLAUDE_SIDEBAR_NO_FETCH=1 CLAUDE_SIDEBAR_GH_TOKEN=test
   unset TMUX TMUX_PANE
 }
@@ -37,7 +42,8 @@ tm() { tmux -L "$SOCK" "$@"; }
 start_tmux() { # <cols> <rows>
   tm -f /dev/null new-session -d -s main -x "$1" -y "$2" "sleep 1d"
   # Scripts the test runs itself (hooks, claude-sessions) talk to this server too
-  export TMUX="$(tm display -p '#{socket_path}'),0,0"
+  TMUX="$(tm display -p '#{socket_path}'),0,0"
+  export TMUX
 }
 
 add_window() { # [name]
@@ -70,7 +76,7 @@ sidebar() { # the sidebar pane of the active window
 
 screen() { tm capture-pane -p -t "$(sidebar)" | sed 's/ *$//'; }
 screen_raw() { tm capture-pane -p -e -t "$(sidebar)"; }
-line() { screen | sed -n "${1}p"; }                  # <row>
+line() { screen | sed -n "${1}p"; }                         # <row>
 row_of() { screen | grep -n -m1 -E -- "$1" | cut -d: -f1; } # <regex>: its first row
 
 wait_for() { # <regex> [seconds]
@@ -91,11 +97,11 @@ wait_gone() { # <regex> [seconds]
 }
 
 # SGR mouse reports, as the terminal sends them
-click() { tm send-keys -t "$(sidebar)" -l "$ESC[<0;5;${1}M$ESC[<0;5;${1}m"; } # <row>
-wheel() { # <up|down> <row>
+click() { tm send-keys -t "$(sidebar)" -l "${ESC}[<0;5;${1}M${ESC}[<0;5;${1}m"; } # <row>
+wheel() {                                                                         # <up|down> <row>
   local b=65
   [ "$1" = up ] && b=64
-  tm send-keys -t "$(sidebar)" -l "$ESC[<$b;5;${2}M"
+  tm send-keys -t "$(sidebar)" -l "${ESC}[<$b;5;${2}M"
 }
 keys() { tm send-keys -t "$(sidebar)" "$@"; }
 
