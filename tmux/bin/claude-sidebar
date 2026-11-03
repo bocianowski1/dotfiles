@@ -374,6 +374,7 @@ ISSUE_TTL_FILE=~/.config/claude-sidebar/issue-ttl
 # How long a session counts as having answered recently (orange dot); a click on the
 # header's "● 15m" cycles it
 RECENT_FILE=~/.config/claude-sidebar/recent-minutes
+BLINK_SECONDS=120 # a session that just answered blinks this long
 MINUTE_STEPS=(5 15 30 60) # the values a click cycles through, for both settings
 
 # A minutes setting: its file's number, or 15 (no subshell: this runs on every redraw)
@@ -529,7 +530,11 @@ render() {
           running) dot="$ESC[38;5;114m●" ;;
           idle)
             dot="$ESC[38;5;245m●"
-            [ -n "$replied" ] && [ $((EPOCHSECONDS - replied)) -lt $((recent_minutes * 60)) ] && dot="$ESC[38;5;214m●"
+            if [ -n "$replied" ] && [ $((EPOCHSECONDS - replied)) -lt $((recent_minutes * 60)) ]; then
+              dot="$ESC[38;5;214m●"
+              # Blinking for the first 2 minutes: the terminal blinks it (SGR 5), so no redraws
+              [ $((EPOCHSECONDS - replied)) -lt "$BLINK_SECONDS" ] && dot="$ESC[5;38;5;214m●"
+            fi
             ;;
           *) dot="$ESC[38;5;240m○" ;; # Claude is running, but its hooks have not reported yet
         esac
