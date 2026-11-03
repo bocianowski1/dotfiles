@@ -188,7 +188,9 @@ refresh_others() { # [pane]
 }
 
 # Refresh the calendar cache in the background every 5 minutes, or now with "force"
+# (CLAUDE_SIDEBAR_NO_FETCH=1, as in the tests: never)
 calendar_fetch() {
+  [ -z "${CLAUDE_SIDEBAR_NO_FETCH:-}" ] || return 0
   [ -f "$CALENDAR_URL_FILE" ] || return
   local age=999999
   [ -f "$CALENDAR_CACHE" ] && age=$((EPOCHSECONDS - $(stat -c %Y "$CALENDAR_CACHE")))
@@ -283,6 +285,7 @@ issue_lines() {
 # Refresh the issues cache in the background every 5 minutes, or now with "force"
 # (one fetch at a time); the sidebars redraw as soon as it lands
 issues_fetch() {
+  [ -z "${CLAUDE_SIDEBAR_NO_FETCH:-}" ] || return 0
   command -v gh >/dev/null || return
   local age=999999
   [ -f "$ISSUES_CACHE" ] && age=$((EPOCHSECONDS - $(stat -c %Y "$ISSUES_CACHE")))

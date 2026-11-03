@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Tests and lint for the tmux sidebar scripts (tmux/bin, tmux/lib).
+#   tmux/test/run              lint, then every test
+#   tmux/test/run <filter>     only the tests whose name contains <filter> (no lint)
+#   tmux/test/run --lint       only the lint
+# A test is a test_* function in a test_*.sh file next to this one. Each runs in its own
+# subshell with a fresh tmux server and HOME (lib.sh), several at a time.
+# Lint: shellcheck (warnings and up) and shfmt -i 2 (the format nvim saves with), from
+# mason's tools when they are not on PATH.
+cd "$(dirname "$(readlink -f "$0")")" || exit 1
+TOOLS=~/.local/share/nvim/mason/bin
+JOBS=${JOBS:-4}
+
+lint() {
+  local sc shf files=() f rc=0
+  sc=$(command -v shellcheck || echo "$TOOLS/shellcheck")
+  shf=$(command -v shfmt || echo "$TOOLS/shfmt")
+  for f in ../bin/* ../lib/*.sh ../lib/*/*.sh ./run ./*.sh; do
+    [ -f "$f" ] && head -1 "$f" | grep -qE 'bash|^#' && [[ $f != *claude-calendar && $f != *claude-issue-image ]] && files+=("$f")
+  done
+  echo "lint: ${#files[@]} files"
+  "$sc" -x -S warning "${files[@]}" || rc=1
+  "$shf" -i 2 -d "${files[@]}" || rc=1
+  [ "$rc" = 0 ] && echo "lint: ok"
+  return $rc
+}
+
+run_test() { # <file> <function>: output in a log; prints "ok" or the log
+  local log
+  log=$(
+    exec 2>&1
+    # shellcheck source=lib.sh
+    source ./lib.sh
+    # shellcheck disable=SC1090
+    source "$1"
+    setup
+    trap teardown EXIT
+    "$2"
+  )
+  local rc=$?
+  if [ $rc = 0 ]; then printf 'ok    %s\n' "$2"; else printf 'FAIL  %s\n%s\n' "$2" "$log" | sed '2,$s/^/      /'; fi
+  return $rc
+}
+
+tests() { # <filter>: "file function" lines
+  local f fn
+  for f in ./test_*.sh; do
+    for fn in $(grep -oE '^test_[a-z0-9_]+' "$f"); do
+      [[ $fn == *"$1"* ]] && echo "$f $fn"
+    done
+  done
+}
+
+rc=0
+case ${1:-} in
+--lint)
+  lint
+  exit
+  ;;
+'') lint || rc=1 ;;
+esac
+
+start=$SECONDS
+mapfile -t all < <(tests "${1:-}")
+results=$(mktemp -d)
+trap 'rm -rf "$results"' EXIT
+i=0
+for t in "${all[@]}"; do
+  # shellcheck disable=SC2086 # "file function"
+  run_test $t >"$results/$i" &
+  i=$((i + 1))
+  while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n; done
+done
+wait
+failed=0
+for ((n = 0; n < i; n++)); do
+  cat "$results/$n"
+  grep -q '^FAIL' "$results/$n" && failed=$((failed + 1))
+done
+echo "$((i - failed))/$i tests passed in $((SECONDS - start))s"
+[ "$failed" = 0 ] && exit $rc
+exit 1
