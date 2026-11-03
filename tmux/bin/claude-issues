@@ -4,13 +4,10 @@
 #   repo <TAB> number <TAB> assigned(1/0) <TAB> title <TAB> url
 # Always uses the torgermalling login, whichever gh account is active.
 set -euo pipefail
-USER_LOGIN=torgermalling
-CACHE=${CLAUDE_SIDEBAR_CACHE:-~/.cache/claude-sidebar}/issues.tsv
-
-# The torgermalling token, asked of gh once per process tree: whoever starts us (the
-# sidebar, a popup) passes it on in CLAUDE_SIDEBAR_GH_TOKEN, only in memory
-GH_TOKEN=${CLAUDE_SIDEBAR_GH_TOKEN:-$(gh auth token --user "$USER_LOGIN")}
-export GH_TOKEN CLAUDE_SIDEBAR_GH_TOKEN=$GH_TOKEN
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(dirname "$(readlink -f "$0")")")/lib/common.sh"
+CACHE=$CACHE_DIR/issues.tsv
+gh_token # the GH_USER token, whichever gh account is active
 fields=repository,number,title,url,updatedAt
 jq_rows='.[] | [.updatedAt, .repository.name, (.number | tostring), $a, (.title | gsub("[\t\n]"; " ")), .url] | @tsv'
 
@@ -18,8 +15,8 @@ tmp=$(mktemp "${CACHE%/*}/issues.XXXXXX")
 trap 'rm -f "$tmp" "$tmp.all" "$tmp.merged"' EXIT
 # assigned rows sort first within a url, so the dedupe keeps "assigned" when an issue is both
 {
-  gh search issues --assignee "$USER_LOGIN" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"1\"}"
-  gh search issues --author "$USER_LOGIN" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"0\"}"
+  gh search issues --assignee "$GH_USER" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"1\"}"
+  gh search issues --author "$GH_USER" --state open --limit 100 --json "$fields" --jq "${jq_rows//\$a/\"0\"}"
 } | sort -t$'\t' -k6,6 -k4,4r | awk -F'\t' '!seen[$6]++' | sort -t$'\t' -k1,1r | cut -f2- >"$tmp.all"
 
 # Issues created from the sidebar in the last 15 minutes stay in, at the top, even while

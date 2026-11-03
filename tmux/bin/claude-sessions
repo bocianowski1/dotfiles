@@ -5,10 +5,12 @@
 #                                             (prefix g): waiting on you (red) first, then
 #                                             answered recently (orange), newest first;
 #                                             pressed again, on to the one after <pane>
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(dirname "$(readlink -f "$0")")")/lib/common.sh"
+
 if [ "${1:-}" = next ]; then
-  client=$2 current=$3 minutes=15
-  read -r minutes 2>/dev/null <~/.config/claude-sidebar/recent-minutes
-  [[ $minutes =~ ^[0-9]+$ ]] || minutes=15
+  client=$2 current=$3
+  minutes_setting "$RECENT_FILE"
   mapfile -t order < <(tmux list-panes -a -F '#{@claude_state} #{?#{@claude_replied},#{@claude_replied},0} #{pane_id} #{session_name}:#{window_index}.#{pane_index}' |
     awk -v now="$EPOCHSECONDS" -v keep=$((minutes * 60)) '
       $1 == "attention" { print 0, 0, $3, $4 }

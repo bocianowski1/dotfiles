@@ -24,18 +24,15 @@
 #   ⌫ q Esc  close
 # CLAUDE_ISSUE_DRYRUN=1 makes "c" print the pane command and prompt instead of running it,
 # and "x" skip the GitHub call. CLAUDE_SIDEBAR_CACHE overrides ~/.cache/claude-sidebar.
+# Sourced (as the tests do), it only defines its functions.
 set -uo pipefail
-USER_LOGIN=torgermalling
+# shellcheck source=../lib/common.sh
+source "$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")/lib/common.sh"
 CODE_DIR=~/code
-CACHE_DIR=${CLAUDE_SIDEBAR_CACHE:-~/.cache/claude-sidebar}
 PROMPTS=$CACHE_DIR/prompts
 VIEW_CACHE=$CACHE_DIR/issue-view
-TTL_FILE=~/.config/claude-sidebar/issue-ttl
 
-# The torgermalling token, asked of gh once per process tree: whoever starts us (the
-# sidebar, a popup) passes it on in CLAUDE_SIDEBAR_GH_TOKEN, only in memory
-GH_TOKEN=${CLAUDE_SIDEBAR_GH_TOKEN:-$(gh auth token --user "$USER_LOGIN")}
-export GH_TOKEN CLAUDE_SIDEBAR_GH_TOKEN=$GH_TOKEN
+gh_token # the GH_USER token, whichever gh account is active
 export GH_PAGER=cat
 
 # Local clone of owner/repo under CODE_DIR: real clones only (a worktree's .git is a file),
@@ -116,13 +113,6 @@ EOF
   new=$("${cmd[@]}") && tmux set -p -t "$new" @claude_issue "$url"
 }
 
-ttl_minutes() {
-  local m
-  m=$(cat "$TTL_FILE" 2>/dev/null)
-  [[ $m =~ ^[0-9]+$ ]] || m=15
-  echo "$m"
-}
-
 # Cache files for an issue rendered at a text width: <base>.txt (gh's rendering),
 # <base>.meta (title, labels, then the markdown body) and the images: <base>.img<N>.txt
 # (drawn), <base>.img<N>.name, and <base>.images once all are done (holding the count).
@@ -131,9 +121,11 @@ ttl_minutes() {
 CACHE_FORMAT=3 # 2: .meta carries the body (for images); 3: keeps the originals (.src)
 cache_base() { echo "$VIEW_CACHE/${1//\//_}_$2_w$3_v$CACHE_FORMAT"; } # <owner/repo> <number> <width>
 
-cache_fresh() { # <base>
+cache_fresh() { # <base>: fetched less than ISSUE_TTL_FILE's minutes ago
   [ -s "$1.txt" ] && [ -f "$1.meta" ] || return 1
-  [ $(($(date +%s) - $(stat -c %Y "$1.txt"))) -lt $(($(ttl_minutes) * 60)) ]
+  local minutes
+  minutes_setting "$ISSUE_TTL_FILE"
+  [ $((EPOCHSECONDS - $(stat -c %Y "$1.txt"))) -lt $((minutes * 60)) ]
 }
 
 # Fetch an issue into the cache unless it is fresh. "wait" blocks on a fetch already
@@ -621,6 +613,8 @@ view() {
     esac
   done
 }
+
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0 # sourced: functions only
 
 case ${1:-} in
 view) view "$2" "$3" ;;
