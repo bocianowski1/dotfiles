@@ -450,6 +450,7 @@ render() {
   local issue_offset=0 issue_total=0 issue_sel=0 issue_filter= filter_typing=0 last_hover= followed_issue=
   local nav=0 nav_target= issue_url= window_width=0 window_id= checked_at=-99
   local last_frame= tree_offset=0 tree_top=0 tree_bottom=0 todo_offset=0 todo_top=0 todo_bottom=0 nav_seen=
+  local issue_top=0 issue_bottom=-1
   # Only follow issues the popup moves to from now on, not one it showed before we started
   followed_issue=$(tmux show -gv @claude_issue_selected 2>/dev/null)
 
@@ -565,8 +566,10 @@ render() {
       [ "$issue_rows_vis" -ge 1 ] || issue_rows_vis=1
       issue_scroll 0
       issue_lines "$width"
+      local b_issue_start=-1 # issue rows are b_text[b_issue_start ..] (to the end)
       if [ ${#issue_lines[@]} -gt 0 ]; then
         b_text+=("" "$rule" "") b_click+=("" "" "")
+        b_issue_start=${#b_text[@]}
         for i in "${!issue_lines[@]}"; do
           b_text+=("${issue_lines[i]}")
           case ${issue_urls[i]} in
@@ -616,6 +619,8 @@ render() {
       for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
       row=$((row + pad))
       todo_top=$row todo_bottom=$((row + b_todo_end - 1))
+      issue_top=0 issue_bottom=-1
+      [ "$b_issue_start" -ge 0 ] && issue_top=$((row + b_issue_start)) issue_bottom=$((row + ${#b_text[@]} - 1))
       for i in "${!b_text[@]}"; do
         out+="${b_text[i]}${ESC}[K"$'\n'
         [ -n "${b_click[i]}" ] && click[$row]=${b_click[i]}
@@ -693,12 +698,12 @@ render() {
               fi
               last_hover=$hovered
               ;;
-            64M | 65M) # wheel: scroll the list under the mouse
+            64M | 65M) # wheel: scroll the list under the mouse (elsewhere, nothing)
               local d=1 at=${BASH_REMATCH[2]}
               [ "${BASH_REMATCH[1]}" = 64 ] && d=-1
               if [ "$at" -ge "$tree_top" ] && [ "$at" -le "$tree_bottom" ]; then tree_offset=$((tree_offset + d))
               elif [ "$at" -ge "$todo_top" ] && [ "$at" -le "$todo_bottom" ]; then todo_offset=$((todo_offset + d))
-              else issue_scroll "$d"; fi
+              elif [ "$at" -ge "$issue_top" ] && [ "$at" -le "$issue_bottom" ]; then issue_scroll "$d"; fi
               ;;
             0M) activate "${click[${BASH_REMATCH[2]}]:-}" ;;
           esac
