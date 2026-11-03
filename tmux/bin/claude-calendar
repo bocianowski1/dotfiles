@@ -8,7 +8,8 @@
 Reads the secret .ics link from ~/.config/claude-sidebar/calendar-url (kept out of dotfiles)
 and writes ~/.cache/claude-sidebar/calendar.tsv with one meeting per line:
     start_epoch <TAB> end_epoch <TAB> title <TAB> join_url
-covering now until the end of tomorrow. Cancelled and all-day events are left out.
+covering now until the end of this week (Sunday), and at least the end of tomorrow.
+Cancelled and all-day events are left out.
 
 Usage: claude-calendar [--file some.ics]   (--file reads a local file instead, for testing)
 """
@@ -47,7 +48,9 @@ def join_url(event) -> str:
 
 def main() -> None:
     now = dt.datetime.now().astimezone()
-    until = (now + dt.timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # The sidebar shows today and tomorrow, and else the next meeting this week (to Sunday)
+    until = max(midnight + dt.timedelta(days=2), midnight + dt.timedelta(days=7 - now.weekday()))
     rows = []
     for event in recurring_ical_events.of(load_calendar()).between(now, until):
         start, end = event["DTSTART"].dt, event["DTEND"].dt if "DTEND" in event else None

@@ -40,70 +40,125 @@ calendar_lines() {
   local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
   cal_lines=() cal_urls=()
   [ -f "$CALENDAR_URL_FILE" ] || return
-  local today tomorrow shown=0 last_label= start end title url
+  local today tomorrow wday k d start end title url
   printf -v today '%(%F)T' "$now"
   printf -v tomorrow '%(%F)T' $((now + 86400))
-  [ -s "$CALENDAR_CACHE" ] || { cal_lines+=("${DIM} No meetings today${RESET}") cal_urls+=(""); return; }
+  # The rest of this week (to Sunday) after tomorrow, by date; noon steps are safe across DST
+  local -A later_day=()
+  local midnight hms
+  printf -v hms '%(%H %M %S %u)T' "$now"
+  read -r k d start wday <<<"$hms"
+  midnight=$((now - 10#$k * 3600 - 10#$d * 60 - 10#$start))
+  for ((k = 2; k <= 7 - wday; k++)); do
+    printf -v d '%(%F)T' $((midnight + k * 86400 + 43200))
+    later_day[$d]=1
+  done
 
-  while IFS=$'\t' read -r start end title url; do
-    [ "$end" -gt "$now" ] || continue
-    [ "$shown" -lt "$CALENDAR_MAX" ] || break
-    local day label
-    printf -v day '%(%F)T' "$start"
-    case $day in "$today") label=Today ;; "$tomorrow") label=Tomorrow ;; *) continue ;; esac
-    if [ "$label" != "$last_label" ]; then
-      [ -n "$last_label" ] && cal_lines+=("") cal_urls+=("")
-      [ "$label" = Tomorrow ] && [ -z "$last_label" ] && cal_lines+=("${DIM} No more meetings today${RESET}") cal_urls+=("") && cal_lines+=("") cal_urls+=("")
-      cal_lines+=("${BOLD} ${label}${RESET}") cal_urls+=("")
-      last_label=$label
-    fi
+  # Meetings not over yet: today's and tomorrow's (CALENDAR_MAX in all), and the first one
+  # after that this week
+  local -a today_rows=() tomorrow_rows=()
+  local next_row= day
+  if [ -s "$CALENDAR_CACHE" ]; then
+    while IFS=$'\t' read -r start end title url; do
+      [ "$end" -gt "$now" ] || continue
+      printf -v day '%(%F)T' "$start"
+      if [ "$day" = "$today" ] || [ "$day" = "$tomorrow" ]; then
+        [ $((${#today_rows[@]} + ${#tomorrow_rows[@]})) -lt "$CALENDAR_MAX" ] || continue
+        if [ "$day" = "$today" ]; then today_rows+=("$start"$'\t'"$end"$'\t'"$title"$'\t'"$url")
+        else tomorrow_rows+=("$start"$'\t'"$end"$'\t'"$title"$'\t'"$url"); fi
+      elif [ -z "$next_row" ] && [ -n "${later_day[$day]:-}" ]; then
+        next_row="$start"$'\t'"$end"$'\t'"$title"$'\t'"$url"
+      fi
+    done <"$CALENDAR_CACHE"
+  fi
 
-    # "now" while it runs, "in 12m" within the hour (orange from 10 minutes before)
-    local tag= tagc=$DIM mins=$(((start - now + 59) / 60))
-    if [ "$start" -le "$now" ]; then tag=now tagc="$ESC[38;5;114m"
-    elif [ "$mins" -le 60 ]; then tag="in ${mins}m"; [ "$mins" -le 10 ] && tagc="$ESC[1;38;5;214m"
-    fi
-    local hhmm max=$((width - 16))
-    printf -v hhmm '%(%H:%M)T' "$start"
-    [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
-    local line
-    printf -v line '  %s%s%s %-*s %s%6s%s' "$DIM" "$hhmm" "$RESET" "$max" "$title" "$tagc" "$tag" "$RESET"
-    cal_lines+=("$line") cal_urls+=("$url")
-    shown=$((shown + 1))
-  done <"$CALENDAR_CACHE"
-  [ "$shown" -gt 0 ] || { cal_lines+=("${DIM} No more meetings${RESET}") cal_urls+=(""); }
+  local r
+  if [ ${#today_rows[@]} -gt 0 ]; then
+    cal_lines+=("${BOLD} Today${RESET}") cal_urls+=("")
+    for r in "${today_rows[@]}"; do calendar_meeting "$r"; done
+  elif [ ${#tomorrow_rows[@]} -gt 0 ] || [ -n "$next_row" ]; then
+    cal_lines+=("${DIM} No meetings today${RESET}") cal_urls+=("")
+  else
+    cal_lines+=("${DIM} No meetings this week${RESET}") cal_urls+=("")
+    return
+  fi
+  if [ ${#tomorrow_rows[@]} -gt 0 ]; then
+    cal_lines+=("" "${BOLD} Tomorrow${RESET}") cal_urls+=("" "")
+    for r in "${tomorrow_rows[@]}"; do calendar_meeting "$r"; done
+  elif [ ${#today_rows[@]} -eq 0 ]; then
+    # Nothing today or tomorrow: the next meeting this week, under its day
+    local label
+    printf -v label '%(%A %d.%m)T' "${next_row%%$'\t'*}"
+    cal_lines+=("" "${BOLD} ${label}${RESET}") cal_urls+=("" "")
+    calendar_meeting "$next_row"
+  fi
+}
+# One meeting line (calendar_lines' locals): "now" while it runs, "in 12m" within the hour
+# (orange from 10 minutes before)
+calendar_meeting() { # <cache row>
+  local start end title url tag= tagc=$DIM mins hhmm max=$((width - 16)) line
+  IFS=$'\t' read -r start end title url <<<"$1"
+  mins=$(((start - now + 59) / 60))
+  if [ "$start" -le "$now" ]; then tag=now tagc="$ESC[38;5;114m"
+  elif [ "$mins" -le 60 ]; then tag="in ${mins}m"; [ "$mins" -le 10 ] && tagc="$ESC[1;38;5;214m"
+  fi
+  printf -v hhmm '%(%H:%M)T' "$start"
+  [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
+  printf -v line '  %s%s%s %-*s %s%6s%s' "$DIM" "$hhmm" "$RESET" "$max" "$title" "$tagc" "$tag" "$RESET"
+  cal_lines+=("$line") cal_urls+=("$url")
 }
 
 TODO_FILE=~/.config/claude-sidebar/todo.md
-TODO_MAX=8 # items shown
+TODO_ROWS=5 # items visible at once; the mouse wheel (or j/k) scrolls through the rest
 
-# Open todo items ("- [ ] ..." lines of TODO_FILE) into the array todo_lines, with the
-# file line number of each into todo_refs (so a click can tick that line off)
+# Open todo items ("- [ ] ..." lines of TODO_FILE): all of them into todo_all / todo_all_refs
+# (the file line number of each, so a click can tick that line off), and the visible window
+# from todo_offset, with the header, into todo_lines / todo_refs
 todo_lines() {
   local width=$1 ESC=$'\e'
   local RESET="$ESC[0m" BOLD="$ESC[1m" DIM="$ESC[38;5;245m"
-  todo_lines=() todo_refs=()
-  local hint="a add · e edit"
-  local head
-  printf -v head '%s Todo%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 6)) "$hint" "$RESET"
-  todo_lines+=("$head") todo_refs+=(edit)
+  todo_lines=() todo_refs=() todo_all=() todo_all_refs=()
 
-  local n=0 total=0 lineno text max=$((width - 5))
+  local lineno=0 text max=$((width - 5))
   if [ -f "$TODO_FILE" ]; then
-    lineno=0
     while IFS= read -r text || [ -n "$text" ]; do
       lineno=$((lineno + 1))
       [[ $text =~ ^[[:space:]]*-\ \[\ \]\  ]] || continue
-      total=$((total + 1))
-      [ "$n" -lt "$TODO_MAX" ] || continue
       text=${text#*- \[ \] }
       [ ${#text} -gt "$max" ] && text="${text:0:max-1}…"
-      todo_lines+=("  ${DIM}○${RESET} $text") todo_refs+=("$lineno")
-      n=$((n + 1))
+      todo_all+=("  ${DIM}○${RESET} $text") todo_all_refs+=("$lineno")
     done <"$TODO_FILE"
   fi
-  [ "$total" -gt "$n" ] && todo_lines+=("${DIM}    +$((total - n)) more${RESET}") todo_refs+=(edit)
+  local total=${#todo_all[@]}
+  # Keep the keyboard selection in view when it moves onto a todo
+  if [ "$nav" = 1 ] && [ "$nav_target" != "$nav_seen" ] && [[ $nav_target == todo:* ]]; then
+    local i
+    for i in "${!todo_all_refs[@]}"; do
+      [ "todo:${todo_all_refs[i]}" = "$nav_target" ] || continue
+      [ "$i" -ge "$todo_offset" ] || todo_offset=$i
+      [ "$i" -lt $((todo_offset + TODO_ROWS)) ] || todo_offset=$((i - TODO_ROWS + 1))
+    done
+  fi
+  local last=$((total - TODO_ROWS))
+  [ "$last" -ge 0 ] || last=0
+  [ "$todo_offset" -le "$last" ] || todo_offset=$last
+  [ "$todo_offset" -ge 0 ] || todo_offset=0
+
+  local head title=" Todo" more
+  [ "$total" -gt 0 ] && title+=" ($total)"
+  scroll_marks "$todo_offset" $((total - todo_offset - TODO_ROWS))
+  printf -v head '%s%s%s %s%*s%s' "$BOLD" "$title" "$RESET$DIM" "$more" $((width - ${#title} - ${#more} - 1)) "a add · e edit" "$RESET"
+  todo_lines+=("$head") todo_refs+=(edit)
+  todo_lines+=("${todo_all[@]:todo_offset:TODO_ROWS}") todo_refs+=("${todo_all_refs[@]:todo_offset:TODO_ROWS}")
   [ "$total" -gt 0 ] || { todo_lines+=("${DIM}  Nothing to do${RESET}") todo_refs+=(""); }
+}
+
+# "↑2 ↓5" into more: how many rows a scrolled list hides above and below (empty when none)
+scroll_marks() { # <above> <below>
+  more=
+  [ "$1" -gt 0 ] && more="↑$1"
+  [ "$2" -gt 0 ] && more+="${more:+ }↓$2"
+  return 0
 }
 
 # Tick off line <n> of TODO_FILE, only if it is still an open item (the file may have
@@ -386,10 +441,10 @@ render() {
   # flashed all sidebars whenever they restarted, e.g. on a script change)
   printf '%s' "$ESC[?25l$ESC[?1000h$ESC[?1003h$ESC[?1006h"
   local -A click # screen row -> window id (group), pane id (item) or url: (meeting)
-  local -a cal_lines cal_urls todo_lines todo_refs issue_lines issue_urls issue_rows nav_order
+  local -a cal_lines cal_urls todo_lines todo_refs todo_all todo_all_refs issue_lines issue_urls issue_rows nav_order
   local issue_offset=0 issue_total=0 issue_sel=0 issue_filter= filter_typing=0 last_hover= followed_issue=
   local nav=0 nav_target= issue_url= window_width=0 window_id= checked_at=-99
-  local last_frame=
+  local last_frame= tree_offset=0 tree_top=0 tree_bottom=0 todo_offset=0 todo_top=0 todo_bottom=0 nav_seen=
   # Only follow issues the popup moves to from now on, not one it showed before we started
   followed_issue=$(tmux show -gv @claude_issue_selected 2>/dev/null)
 
@@ -414,14 +469,16 @@ render() {
     # Only the sidebar you can see draws; hidden ones wait (up to a minute) and are woken by
     # the window-switch hook the moment their window comes into view
     if [ "$visible" = 1 ]; then
-      local out="${BOLD} Claude Code${RESET}${ESC}[K"$'\n'"${ESC}[K"$'\n'
-      local last_win= row=3
+      # The window tree first goes into tree_text / tree_click (all of it), so it can be
+      # fitted, scrolled, into the room the bottom block leaves
+      local out= last_win= row=3
+      local -a tree_text=() tree_click=()
       click=()
       local today
       printf -v today '%(%F)T' -1
       while IFS=$US read -r wid pid widx wname wactive pactive state title path cmd sidebar opened marked; do
         if [ "$widx" != "$last_win" ]; then
-          [ -n "$last_win" ] && out+="${ESC}[K"$'\n' && row=$((row + 1))
+          [ -n "$last_win" ] && tree_text+=("") tree_click+=("")
           local colour=$WINDOW
           [ "$marked" = 1 ] && colour=$MARKED
           [ "$wactive" = 1 ] && colour=$ACTIVE # the window you are in stays orange, marked or not
@@ -436,9 +493,7 @@ render() {
           [ ${#name} -gt "$room" ] && name="${name:0:room-1}…"
           local line
           printf -v line '%s%s%-*s%s %s' "$colour" "$BOLD" "$room" "$name" "$RESET$DIM" "$when"
-          out+="$line${RESET}${ESC}[K"$'\n'
-          click[$row]=$wid
-          row=$((row + 1))
+          tree_text+=("$line${RESET}") tree_click+=("$wid")
           last_win=$widx
         fi
         [ "$sidebar" != 1 ] || continue
@@ -460,9 +515,7 @@ render() {
         [ ${#title} -gt "$max" ] && title="${title:0:max-1}…"
         local line
         printf -v line '  %s %-*s %s' "$marker" "$max" "$title" "$dot"
-        out+="$line${RESET}${ESC}[K"$'\n'
-        click[$row]=$pid
-        row=$((row + 1))
+        tree_text+=("$line${RESET}") tree_click+=("$pid")
       done < <(printf '%s\n' "${tmux_out[@]:1}")
 
       # Bottom block, pinned above the footer: todo, calendar and issues, separated by lines.
@@ -471,8 +524,11 @@ render() {
       printf -v now '%(%s)T' -1
       printf -v rule '%*s' $((width - 2)) ''
       rule=" ${DIM}${rule// /─}${RESET}"
-      local -a b_text=() b_click=()
+      local -a b_text=() b_click=() b_nav=()
       todo_lines "$width"
+      local b_todo_end=${#todo_lines[@]} # todo rows are b_text[0 .. b_todo_end-1]
+      b_nav+=(todo-edit)
+      for i in "${todo_all_refs[@]}"; do b_nav+=("todo:$i"); done
       for i in "${!todo_lines[@]}"; do
         b_text+=("${todo_lines[i]}")
         case ${todo_refs[i]} in
@@ -500,13 +556,42 @@ render() {
             '') b_click+=("") ;;
             *) b_click+=("issue:${issue_urls[i]}") ;;
           esac
+          [ -n "${b_click[-1]}" ] && [ "${b_click[-1]}" != filter ] && b_nav+=("${b_click[-1]}")
         done
       fi
+
+      # The tree gets the rows the bottom block, header and footer leave (at least 3); when
+      # it does not fit, it scrolls (mouse wheel), and keyboard mode keeps its selection in view
+      local tree_total=${#tree_text[@]} tree_rows
+      tree_rows=$((height - 2 - ${#b_text[@]} - 2 - 1))
+      [ "$tree_rows" -ge 3 ] || tree_rows=3
+      [ "$tree_rows" -le "$tree_total" ] || tree_rows=$tree_total
+      if [ "$nav" = 1 ] && [ "$nav_target" != "$nav_seen" ]; then
+        for i in "${!tree_click[@]}"; do
+          [ "${tree_click[i]}" = "$nav_target" ] || continue
+          [ "$i" -ge "$tree_offset" ] || tree_offset=$i
+          [ "$i" -lt $((tree_offset + tree_rows)) ] || tree_offset=$((i - tree_rows + 1))
+        done
+      fi
+      [ "$tree_offset" -le $((tree_total - tree_rows)) ] || tree_offset=$((tree_total - tree_rows))
+      [ "$tree_offset" -ge 0 ] || tree_offset=0
+      local more head
+      scroll_marks "$tree_offset" $((tree_total - tree_offset - tree_rows))
+      printf -v head '%s Claude Code%s%*s%s' "$BOLD" "$RESET$DIM" $((width - 13)) "$more" "$RESET"
+      out="$head${ESC}[K"$'\n'"${ESC}[K"$'\n'
+      tree_top=3
+      for ((i = tree_offset; i < tree_offset + tree_rows; i++)); do
+        out+="${tree_text[i]}${ESC}[K"$'\n'
+        [ -n "${tree_click[i]}" ] && click[$row]=${tree_click[i]}
+        row=$((row + 1))
+      done
+      tree_bottom=$((row - 1))
 
       local pad=$((height - (row - 1) - ${#b_text[@]} - 2))
       [ "$pad" -ge 1 ] || pad=1
       for ((i = 0; i < pad; i++)); do out+="${ESC}[K"$'\n'; done
       row=$((row + pad))
+      todo_top=$row todo_bottom=$((row + b_todo_end - 1))
       for i in "${!b_text[@]}"; do
         out+="${b_text[i]}${ESC}[K"$'\n'
         [ -n "${b_click[i]}" ] && click[$row]=${b_click[i]}
@@ -521,12 +606,14 @@ render() {
 
       # Rows you can act on, top to bottom, for keyboard mode; and its highlight: a grey bar
       # across the selected row, kept through the row's own colour resets
+      # (the whole tree and all todos, also those scrolled out of view)
       local r sel_row=
       nav_order=()
+      for r in "${tree_click[@]}"; do [ -n "$r" ] && nav_order+=("$r"); done
+      nav_order+=("${b_nav[@]}")
+      nav_seen=$nav_target
       for ((r = 1; r <= height; r++)); do
-        [ -n "${click[$r]:-}" ] && [ "${click[$r]}" != filter ] || continue
-        nav_order+=("${click[$r]}")
-        [ "$nav" = 1 ] && [ "${click[$r]}" = "$nav_target" ] && sel_row=$r
+        [ "$nav" = 1 ] && [ "${click[$r]:-}" = "$nav_target" ] && sel_row=$r
       done
       if [ -n "$sel_row" ]; then
         local -a frame
@@ -582,8 +669,13 @@ render() {
               fi
               last_hover=$hovered
               ;;
-            64M) issue_scroll -1 ;;
-            65M) issue_scroll 1 ;;
+            64M | 65M) # wheel: scroll the list under the mouse
+              local d=1 at=${BASH_REMATCH[2]}
+              [ "${BASH_REMATCH[1]}" = 64 ] && d=-1
+              if [ "$at" -ge "$tree_top" ] && [ "$at" -le "$tree_bottom" ]; then tree_offset=$((tree_offset + d))
+              elif [ "$at" -ge "$todo_top" ] && [ "$at" -le "$todo_bottom" ]; then todo_offset=$((todo_offset + d))
+              else issue_scroll "$d"; fi
+              ;;
             0M) activate "${click[${BASH_REMATCH[2]}]:-}" ;;
           esac
         elif [[ $key == $'\e'[[O][AB]* ]]; then
